@@ -202,6 +202,28 @@ end
 
 function Cursor:GetCurrentNode() return current and current.node end
 
+-- 判断节点是否属于某个根窗口（沿父级上溯）
+local function IsDescendant(node, root)
+	local f = node
+	while f and f ~= root do
+		f = f.GetParent and f:GetParent()
+	end
+	return f == root
+end
+
+-- 把光标直接落到指定根窗口里的第一个节点：窗口刚打开时自动选中用
+function Cursor:SelectRoot(root)
+	for i = 1, #Node.cache do
+		local item = Node.cache[i]
+		if IsDescendant(item.node, root) then
+			current = item
+			self:SetNode(item.node, item.object, item.super)
+			return true
+		end
+	end
+	return false
+end
+
 -- 当前节点消失（窗口被关掉）时自动收起光标
 Cursor:SetScript('OnUpdate', function(self, elapsed)
 	self.Timer = (self.Timer or 0) + elapsed

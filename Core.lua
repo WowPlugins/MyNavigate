@@ -196,6 +196,40 @@ local function StartPick()
 	print('|cff739BD0MyNavigate|r: 选取模式已开启，点击要加入导航的窗口')
 end
 
+-- 自动跟随窗口：白名单窗口的可见集合发生变化时自动刷新光标。
+-- 打开窗口 → 光标直接落到该窗口的第一个节点；关闭窗口 → 自动收起或切到剩下的窗口。
+local watcher = CreateFrame('Frame')
+local watchTimer, shown = 0, {}
+watcher:SetScript('OnUpdate', function(_, elapsed)
+	watchTimer = watchTimer + elapsed
+	if watchTimer < 0.2 then return end
+	watchTimer = 0
+	if MyNavigateDB and MyNavigateDB.enabled == false then return end
+	local roots, cur, opened = ns.GetRootFrames(), {}, nil
+	for i = 1, #roots do
+		local name = roots[i]:GetName()
+		if name then
+			cur[name] = true
+			if not shown[name] then opened = roots[i] end
+		end
+	end
+	-- 集合有变化才刷新（新增窗口，或有关掉的窗口），避免每 0.2 秒重复扫描
+	local changed = opened ~= nil
+	if not changed then
+		for name in pairs(shown) do
+			if not cur[name] then
+				changed = true
+				break
+			end
+		end
+	end
+	shown = cur
+	if changed then
+		ns.Cursor:Refresh()
+		if opened then ns.Cursor:SelectRoot(opened) end
+	end
+end)
+
 function MyNavigate:OnDirection(name)
 	local key = DIRECTION_KEYS[name]
 	if key then ns.Cursor:UIControl(key, KEY.STATE_DOWN) end
