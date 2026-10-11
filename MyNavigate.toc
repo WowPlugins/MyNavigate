@@ -5,6 +5,7 @@
 ## Author: ported from ConsolePortLK
 ## SavedVariables: MyNavigateDB
 
+# 加载顺序不能改：Core.lua 依赖前面文件里的 ns.KEY / ns.Node / ns.Cursor
 Bindings.xml
 Node.lua
 Cursor.lua

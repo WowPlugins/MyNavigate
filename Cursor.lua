@@ -1,3 +1,11 @@
+---------------------------------------------------------------------
+-- Cursor.lua: 虚拟光标 —— 金色高亮环、动作提示、动作执行
+---------------------------------------------------------------------
+-- 高亮环是一个独立 Texture（UI-ActionButton-Border，必须用 ADD 混合，
+-- 否则该贴图的黑色底会显示成黑块），锚定当前节点的四个角；
+-- 旁边用 FontString 显示四个动作键当前的功能；
+-- ABXY 直接调用控件自己的 Click(button)，等价 ConsolePort 的 ClickWrapper。
+---------------------------------------------------------------------
 local ADDON, ns = ...
 
 local KEY, Node = ns.KEY, ns.Node
@@ -26,6 +34,7 @@ Cursor.label = label
 
 ns.Cursor = Cursor
 
+-- 动作键 → 点击类型；Y 用 'Special' 走下面的特殊分支
 local ACTION_MAP = { A = 'LeftButton', B = 'RightButton', X = 'LeftButton', Y = 'Special' }
 ns.ACTION_MAP = ACTION_MAP
 
@@ -70,6 +79,7 @@ function Scroll:Offset()
 	if not next(ScrollActive) then Scroll:SetScript('OnUpdate', nil) end
 end
 
+-- 让滚动帧滚到目标节点（导航到视口外的行时使用）
 function Scroll:To(node, super)
 	local _, nodeY = node:GetCenter()
 	local _, scrollY = super:GetCenter()
@@ -140,6 +150,7 @@ function Cursor:HideNode()
 	self.ring:Hide()
 end
 
+-- 重新扫描所有白名单窗口，并重算当前节点
 function Cursor:Refresh()
 	local roots = ns.GetRootFrames()
 	Node:ClearCache()
@@ -154,6 +165,7 @@ function Cursor:Refresh()
 	end
 end
 
+-- 方向键入口：刷新后按方向选最优候选；没有合适的就退化为「同方向上最近的节点」
 function Cursor:UIControl(key, state)
 	self:Refresh()
 	if state == KEY.STATE_DOWN and current then
@@ -169,6 +181,7 @@ function Cursor:UIControl(key, state)
 	return current and current.node
 end
 
+-- 动作键入口：A/X/B 直接 Click，Y 走特殊分支（SpecialClick / 聚焦输入框 / 兜底左键）
 function Cursor:Action(name)
 	if not current then self:Refresh() end
 	if not current then return end
@@ -189,6 +202,7 @@ end
 
 function Cursor:GetCurrentNode() return current and current.node end
 
+-- 当前节点消失（窗口被关掉）时自动收起光标
 Cursor:SetScript('OnUpdate', function(self, elapsed)
 	self.Timer = (self.Timer or 0) + elapsed
 	if self.Timer < 0.1 then return end

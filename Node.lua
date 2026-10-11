@@ -1,3 +1,12 @@
+---------------------------------------------------------------------
+-- Node.lua: 节点扫描 + 方向选择算法（移植自 ConsolePort Drivers/UINode.lua）
+---------------------------------------------------------------------
+-- 1) 递归扫描可见 frame：可交互控件 → 导航节点；其它可见 frame → 遮挡矩形
+-- 2) RunScan 结束后用遮挡矩形剔除被盖住的节点
+-- 3) 选目标：先用曼哈顿距离做「方向过滤」，再用欧氏距离取最优；
+--    上下键把横向距离放大 scalar 倍、左右键把纵向放大，
+--    让方向偏移小的节点优先，避免斜跳
+---------------------------------------------------------------------
 local ADDON, ns = ...
 
 local KEY = { UP = 1, DOWN = 2, LEFT = 3, RIGHT = 4 }
@@ -43,7 +52,7 @@ local Node = {
 		DIALOG = 0x09C40, FULLSCREEN = 0x0C350, FULLSCREEN_DIALOG = 0x0EA60, TOOLTIP = 0x11170,
 	},
 	usable = { Button = true, CheckButton = true, EditBox = true, Slider = true },
-	cache = {}, rects = {}, scalar = 3,
+	cache = {}, rects = {}, scalar = 3, -- scalar: 轴向距离放大倍数（越大越「不斜跳」）
 }
 ns.Node = Node
 
@@ -58,8 +67,17 @@ function Node:IsInteractive(node, object)
 		and (self:IsUsable(object) or self:IsMouseEvent(node))
 end
 
+-- 滚动条（ScrollFrame 下的 Slider）不是有意义的操作目标，排除在导航之外
+local function IsScrollBar(node)
+	if node.GetObjectType and node:IsObjectType('Slider') then
+		local parent = node.GetParent and node:GetParent()
+		return (parent and parent.GetObjectType and parent:IsObjectType('ScrollFrame')) and true or false
+	end
+	return false
+end
+
 function Node:IsRelevant(node)
-	return node and not node.ignoreNode and node:IsVisible()
+	return node and not node.ignoreNode and node:IsVisible() and not IsScrollBar(node)
 end
 
 function Node:IsTree(node) return not node.ignoreChildren end
