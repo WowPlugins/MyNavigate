@@ -1,0 +1,10 @@
+<Bindings>
+	<Binding name="MYNAV_UP" category="MyNavigate" header="MYNAV">MyNavigate:OnDirection("UP")</Binding>
+	<Binding name="MYNAV_DOWN" category="MyNavigate">MyNavigate:OnDirection("DOWN")</Binding>
+	<Binding name="MYNAV_LEFT" category="MyNavigate">MyNavigate:OnDirection("LEFT")</Binding>
+	<Binding name="MYNAV_RIGHT" category="MyNavigate">MyNavigate:OnDirection("RIGHT")</Binding>
+	<Binding name="MYNAV_A" category="MyNavigate" header="MYNAVACT">MyNavigate:OnAction("A")</Binding>
+	<Binding name="MYNAV_B" category="MyNavigate">MyNavigate:OnAction("B")</Binding>
+	<Binding name="MYNAV_X" category="MyNavigate">MyNavigate:OnAction("X")</Binding>
+	<Binding name="MYNAV_Y" category="MyNavigate">MyNavigate:OnAction("Y")</Binding>
+</Bindings>

@@ -1,0 +1,11 @@
+## Interface: 30300
+## Title: MyNavigate
+## Notes: 手柄方向键导航 + ABXY 动作 (ConsolePortLK 抽离版)
+## Version: 1.0.0
+## Author: ported from ConsolePortLK
+## SavedVariables: MyNavigateDB
+
+Bindings.xml
+Node.lua
+Cursor.lua
+Core.lua
