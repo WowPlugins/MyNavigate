@@ -1,5 +1,5 @@
 ---------------------------------------------------------------------
--- Core.lua: 入口 —— 按键绑定、窗口白名单、鼠标选取、斜杠命令
+-- Core.lua: 入口 —— 手柄按键拦截、窗口白名单、鼠标选取、斜杠命令
 ---------------------------------------------------------------------
 -- 导航根节点只从「白名单窗口」里取（内置 PANEL_PATTERNS + 用户自定义 extra），
 -- 所以一个窗口都不开时不会扫到常驻 HUD，也就不会高亮它们。
@@ -204,7 +204,11 @@ watcher:SetScript('OnUpdate', function(_, elapsed)
 	watchTimer = watchTimer + elapsed
 	if watchTimer < 0.2 then return end
 	watchTimer = 0
-	if MyNavigateDB and MyNavigateDB.enabled == false then return end
+	if MyNavigateDB and MyNavigateDB.enabled == false then
+		ns.navActive = false
+		if ns.SetGamepadOverride then ns.SetGamepadOverride(false) end
+		return
+	end
 	local roots, cur, opened = ns.GetRootFrames(), {}, nil
 	for i = 1, #roots do
 		local name = roots[i]:GetName()
@@ -224,50 +228,92 @@ watcher:SetScript('OnUpdate', function(_, elapsed)
 		end
 	end
 	shown = cur
+	-- 手柄按键的接管由 Cursor:Refresh 依据「是否真有可导航节点」决定
 	if changed then
 		ns.Cursor:Refresh()
 		if opened then ns.Cursor:SelectRoot(opened) end
 	end
 end)
 
-function MyNavigate:OnDirection(name)
-	local key = DIRECTION_KEYS[name]
-	if key then ns.Cursor:UIControl(key, KEY.STATE_DOWN) end
-end
-
-function MyNavigate:OnAction(name)
-	ns.Cursor:Action(name)
-end
-
--- 默认按键映射：Shift1~4 方向，Shift5~8 动作
-local DEFAULT_BINDS = {
-	['SHIFT-1'] = 'MYNAV_UP', ['SHIFT-2'] = 'MYNAV_DOWN',
-	['SHIFT-3'] = 'MYNAV_LEFT', ['SHIFT-4'] = 'MYNAV_RIGHT',
-	['SHIFT-5'] = 'MYNAV_A', ['SHIFT-6'] = 'MYNAV_B',
-	['SHIFT-7'] = 'MYNAV_X', ['SHIFT-8'] = 'MYNAV_Y',
+---------------------------------------------------------------------
+-- 手柄按键映射（参考 ConsolePortLK 的做法）
+---------------------------------------------------------------------
+-- 目标：有可导航窗口时 1~8 = 导航/动作；窗口全关后 1~8 = 原始功能。
+-- 难点：战斗中不能临时改按键绑定（SetOverrideBinding 是受保护函数），所以
+--       "随窗口开关切换绑定"的方案一旦窗口在战斗中打开/关闭就会失效。
+-- 做法（与 ConsolePort 相同）：登录(非战斗)时把 1~8 常驻覆盖为 MYNAV_*，
+--       之后不再改动；按键到底执行"导航"还是"原始功能"，改由按键处理器
+--       MyNavigate:OnGamepadKey 在按下瞬间依据 ns.navActive 判断。绑定处理器
+--       运行在安全环境，战斗中也能调用 UseAction 还原成动作条。
+---------------------------------------------------------------------
+-- 逻辑键 → 物理键 & 绑定名（硬编码）：方向 5/6/7/8，动作 X/B/Y/A 对应 1/2/3/4
+local GAMEPAD = {
+	UP    = { key = '5', bind = 'MYNAV_UP' },
+	DOWN  = { key = '6', bind = 'MYNAV_DOWN' },
+	LEFT  = { key = '7', bind = 'MYNAV_LEFT' },
+	RIGHT = { key = '8', bind = 'MYNAV_RIGHT' },
+	X     = { key = '1', bind = 'MYNAV_X' },
+	B     = { key = '2', bind = 'MYNAV_B' },
+	Y     = { key = '3', bind = 'MYNAV_Y' },
+	A     = { key = '4', bind = 'MYNAV_A' },
 }
 
-local function ApplyBinds()
-	for key, action in pairs(DEFAULT_BINDS) do SetBinding(key, action) end
-	SaveBindings(GetCurrentBindingSet())
+local bindOwner = CreateFrame('Frame')   -- 覆盖绑定的归属帧（无需键盘）
+local applied, desired = false, false    -- applied=已生效, desired=期望状态
+
+ns.navActive = false   -- 是否处于导航模式（由 Cursor:Refresh 更新）
+ns.origAction = {}     -- 逻辑键 → 覆盖前的原始绑定名（登录时记录）
+
+local function ApplyOverride(on)
+	if on then
+		for _, info in pairs(GAMEPAD) do
+			SetOverrideBinding(bindOwner, true, info.key, info.bind)
+		end
+	else
+		ClearOverrideBindings(bindOwner)
+	end
+	applied = on
 end
 
-local function ClearBinds()
-	for key in pairs(DEFAULT_BINDS) do SetBinding(key, nil) end
-	SaveBindings(GetCurrentBindingSet())
+-- 常驻覆盖 1~8。战斗中不允许改动绑定，先记下期望值，出战斗后再补上
+function ns.SetGamepadOverride(on)
+	desired = on and true or false
+	if not InCombatLockdown() and desired ~= applied then
+		ApplyOverride(desired)
+	end
+end
+
+bindOwner:RegisterEvent('PLAYER_REGEN_ENABLED')
+bindOwner:SetScript('OnEvent', function()
+	if desired ~= applied and not InCombatLockdown() then ApplyOverride(desired) end
+end)
+
+-- 按键统一入口：导航模式 → 导航/动作；否则还原成覆盖前的原始功能（动作条 1~8）
+function MyNavigate:OnGamepadKey(name)
+	if ns.navActive then
+		local key = DIRECTION_KEYS[name]
+		if key then ns.Cursor:UIControl(key, KEY.STATE_DOWN) else ns.Cursor:Action(name) end
+		return
+	end
+	local orig = ns.origAction[name]
+	local slot = orig and orig:match('^ACTIONBUTTON(%d+)$')
+	if slot then pcall(UseAction, tonumber(slot)) end
 end
 
 local frame = CreateFrame('Frame')
 frame:RegisterEvent('PLAYER_LOGIN')
 frame:SetScript('OnEvent', function()
 	MyNavigateDB = MyNavigateDB or {}
-	if not MyNavigateDB.saved then
-		MyNavigateDB.saved = {}
-		for key in pairs(DEFAULT_BINDS) do
-			MyNavigateDB.saved[key] = GetBindingAction(key)
-		end
-	end
 	if MyNavigateDB.enabled == nil then MyNavigateDB.enabled = true end
+	-- 旧版本用 SetBinding 把 Shift1~8 绑到 MYNAV_*，现已改为固定按键拦截，
+	-- 还原当时保存的原始绑定，避免残留占用
+	if MyNavigateDB.saved then
+		for key, old in pairs(MyNavigateDB.saved) do
+			SetBinding(key, old ~= '' and old or nil)
+		end
+		MyNavigateDB.saved = nil
+		SaveBindings(GetCurrentBindingSet())
+	end
 	-- 清掉误加入白名单的自己（例如 MyNavigatePicker）
 	local extra = MyNavigateDB.extra
 	if extra then
@@ -275,7 +321,12 @@ frame:SetScript('OnEvent', function()
 			if k:sub(1, 10) == 'MyNavigate' then extra[k] = nil end
 		end
 	end
-	if MyNavigateDB.enabled then ApplyBinds() end
+	-- 记录 1~8 覆盖前的原始绑定（必须在应用覆盖之前读取），供非导航时还原
+	for name, info in pairs(GAMEPAD) do
+		ns.origAction[name] = GetBindingAction(info.key)
+	end
+	-- 常驻覆盖 1~8 → MYNAV_*，之后由 OnGamepadKey 决定导航还是原始功能
+	if MyNavigateDB.enabled ~= false then ns.SetGamepadOverride(true) end
 end)
 
 local LABELS = {
@@ -298,19 +349,25 @@ SlashCmdList['MYNAV'] = function(msg)
 	if arg == '' then arg = nil end
 	if cmd == 'on' then
 		MyNavigateDB.enabled = true
-		ApplyBinds()
-		print('|cff739BD0MyNavigate|r: 已开启 (Shift1-8)')
+		if ns.SetGamepadOverride then ns.SetGamepadOverride(true) end
+		print('|cff739BD0MyNavigate|r: 已开启（窗口打开时 1~8 键导航）')
 	elseif cmd == 'off' then
 		MyNavigateDB.enabled = false
-		ClearBinds()
+		ns.navActive = false
+		if ns.SetGamepadOverride then ns.SetGamepadOverride(false) end
+		ns.Cursor:HideNode()
 		print('|cff739BD0MyNavigate|r: 已关闭')
 	elseif cmd == 'reset' then
-		for key, old in pairs(MyNavigateDB.saved or {}) do
-			SetBinding(key, old ~= '' and old or nil)
+		if MyNavigateDB.saved then
+			for key, old in pairs(MyNavigateDB.saved) do
+				SetBinding(key, old ~= '' and old or nil)
+			end
+			MyNavigateDB.saved = nil
+			SaveBindings(GetCurrentBindingSet())
+			print('|cff739BD0MyNavigate|r: 已恢复原始按键绑定')
+		else
+			print('|cff739BD0MyNavigate|r: 没有可恢复的原始按键记录')
 		end
-		MyNavigateDB.saved = nil
-		SaveBindings(GetCurrentBindingSet())
-		print('|cff739BD0MyNavigate|r: 已恢复原始按键绑定')
 	elseif cmd == 'debug' then
 		MyNavigateDB.debug = not MyNavigateDB.debug
 		print('|cff739BD0MyNavigate|r: 调试模式'..(MyNavigateDB.debug and '开启' or '关闭'))

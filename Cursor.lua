@@ -156,8 +156,14 @@ function Cursor:Refresh()
 	Node:ClearCache()
 	Node:RunScan(unpack(roots))
 	current = Node:GetArbitraryCandidate(current, current, self:GetCenter())
-	Debug('面板', #roots, '节点', #Node.cache, '当前',
+	local names = {}
+	for i = 1, #roots do names[i] = roots[i]:GetName() or '?' end
+	Debug('面板', #roots, '['..table.concat(names, ',')..']', '节点', #Node.cache, '当前',
 		current and (current.node:GetName() or current.object) or 'nil')
+	-- 只有真正存在可导航节点时才处于导航模式；面板全关或没有可用节点时，
+	-- 按键处理器会把 1~8 还原成原始功能（动作条）。1~8 的覆盖绑定是常驻的，
+	-- 不随窗口开关变动，因此在战斗中同样有效。
+	ns.navActive = (#Node.cache > 0)
 	if current then
 		self:SetNode(current.node, current.object, current.super)
 	else

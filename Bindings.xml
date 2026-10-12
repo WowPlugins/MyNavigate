@@ -1,12 +1,12 @@
 <Bindings>
 	<!-- 导航类：header 决定在按键设置里显示的分组（对应 BINDING_HEADER_MYNAV） -->
-	<Binding name="MYNAV_UP" category="MyNavigate" header="MYNAV">MyNavigate:OnDirection("UP")</Binding>
-	<Binding name="MYNAV_DOWN" category="MyNavigate">MyNavigate:OnDirection("DOWN")</Binding>
-	<Binding name="MYNAV_LEFT" category="MyNavigate">MyNavigate:OnDirection("LEFT")</Binding>
-	<Binding name="MYNAV_RIGHT" category="MyNavigate">MyNavigate:OnDirection("RIGHT")</Binding>
+	<Binding name="MYNAV_UP" category="MyNavigate" header="MYNAV">MyNavigate:OnGamepadKey("UP")</Binding>
+	<Binding name="MYNAV_DOWN" category="MyNavigate">MyNavigate:OnGamepadKey("DOWN")</Binding>
+	<Binding name="MYNAV_LEFT" category="MyNavigate">MyNavigate:OnGamepadKey("LEFT")</Binding>
+	<Binding name="MYNAV_RIGHT" category="MyNavigate">MyNavigate:OnGamepadKey("RIGHT")</Binding>
 	<!-- 动作类：对应 BINDING_HEADER_MYNAVACT -->
-	<Binding name="MYNAV_A" category="MyNavigate" header="MYNAVACT">MyNavigate:OnAction("A")</Binding>
-	<Binding name="MYNAV_B" category="MyNavigate">MyNavigate:OnAction("B")</Binding>
-	<Binding name="MYNAV_X" category="MyNavigate">MyNavigate:OnAction("X")</Binding>
-	<Binding name="MYNAV_Y" category="MyNavigate">MyNavigate:OnAction("Y")</Binding>
+	<Binding name="MYNAV_A" category="MyNavigate" header="MYNAVACT">MyNavigate:OnGamepadKey("A")</Binding>
+	<Binding name="MYNAV_B" category="MyNavigate">MyNavigate:OnGamepadKey("B")</Binding>
+	<Binding name="MYNAV_X" category="MyNavigate">MyNavigate:OnGamepadKey("X")</Binding>
+	<Binding name="MYNAV_Y" category="MyNavigate">MyNavigate:OnGamepadKey("Y")</Binding>
 </Bindings>
