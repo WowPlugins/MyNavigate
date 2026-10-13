@@ -160,10 +160,10 @@ function Cursor:Refresh()
 	for i = 1, #roots do names[i] = roots[i]:GetName() or '?' end
 	Debug('面板', #roots, '['..table.concat(names, ',')..']', '节点', #Node.cache, '当前',
 		current and (current.node:GetName() or current.object) or 'nil')
-	-- 只有真正存在可导航节点时才处于导航模式；面板全关或没有可用节点时，
-	-- 按键处理器会把 1~8 还原成原始功能（动作条）。1~8 的覆盖绑定是常驻的，
-	-- 不随窗口开关变动，因此在战斗中同样有效。
+	-- 只有真正存在可导航节点时才处于导航模式；面板全关或没有可用节点时清除覆盖，
+	-- 1~8 自动回到各自的原始绑定（动作条等）
 	ns.navActive = (#Node.cache > 0)
+	if ns.SetGamepadOverride then ns.SetGamepadOverride(ns.navActive) end
 	if current then
 		self:SetNode(current.node, current.object, current.super)
 	else

@@ -235,39 +235,45 @@ watcher:SetScript('OnUpdate', function(_, elapsed)
 	end
 end)
 
+-- 导航绑定入口（仅在覆盖绑定生效、即存在可导航窗口时会被触发）
+function MyNavigate:OnDirection(name)
+	local key = DIRECTION_KEYS[name]
+	if key then ns.Cursor:UIControl(key, KEY.STATE_DOWN) end
+end
+
+function MyNavigate:OnAction(name)
+	ns.Cursor:Action(name)
+end
+
 ---------------------------------------------------------------------
--- 手柄按键映射（参考 ConsolePortLK 的做法）
+-- 手柄按键映射（参考 ConsolePortLK：用「覆盖绑定」重定向同一个物理键）
 ---------------------------------------------------------------------
--- 目标：有可导航窗口时 1~8 = 导航/动作；窗口全关后 1~8 = 原始功能。
--- 难点：战斗中不能临时改按键绑定（SetOverrideBinding 是受保护函数），所以
---       "随窗口开关切换绑定"的方案一旦窗口在战斗中打开/关闭就会失效。
--- 做法（与 ConsolePort 相同）：登录(非战斗)时把 1~8 常驻覆盖为 MYNAV_*，
---       之后不再改动；按键到底执行"导航"还是"原始功能"，改由按键处理器
---       MyNavigate:OnGamepadKey 在按下瞬间依据 ns.navActive 判断。绑定处理器
---       运行在安全环境，战斗中也能调用 UseAction 还原成动作条。
+-- 有可导航窗口时 → 1~8 覆盖为 MYNAV_*（导航/动作）；
+-- 窗口全关后   → 清除覆盖，1~8 自动回到各自的原始绑定；本机未绑定的键
+--                （如 6/7/8 = NONE）也就自然回到「无功能」，无需手动还原。
+-- 覆盖绑定只存在于内存、不写存档，/reload 即失效，不污染玩家按键设置。
+-- 注意：战斗中不能改绑定（SetOverrideBinding/ClearOverrideBindings 是受保护
+--       函数），故用 desired/applied 记录期望值，出战斗后由
+--       PLAYER_REGEN_ENABLED 补应用。因此两种情形受客户端限制、无法即时切换：
+--         * 战斗中打开的窗口，本轮战斗内进入不了导航，战斗结束后才补上；
+--         * 战斗中关闭的窗口，本轮战斗内按键仍停在导航态，战斗结束后才还原。
+--       只要窗口是在非战斗时打开/关闭（最常见情形），战斗内外都能正确工作。
 ---------------------------------------------------------------------
--- 逻辑键 → 物理键 & 绑定名（硬编码）：方向 5/6/7/8，动作 X/B/Y/A 对应 1/2/3/4
-local GAMEPAD = {
-	UP    = { key = '5', bind = 'MYNAV_UP' },
-	DOWN  = { key = '6', bind = 'MYNAV_DOWN' },
-	LEFT  = { key = '7', bind = 'MYNAV_LEFT' },
-	RIGHT = { key = '8', bind = 'MYNAV_RIGHT' },
-	X     = { key = '1', bind = 'MYNAV_X' },
-	B     = { key = '2', bind = 'MYNAV_B' },
-	Y     = { key = '3', bind = 'MYNAV_Y' },
-	A     = { key = '4', bind = 'MYNAV_A' },
+-- 物理键 → 绑定名（硬编码）：方向 5/6/7/8，动作 X/B/Y/A 对应 1/2/3/4
+local GAMEPAD_KEYS = {
+	['5'] = 'MYNAV_UP', ['6'] = 'MYNAV_DOWN', ['7'] = 'MYNAV_LEFT', ['8'] = 'MYNAV_RIGHT',
+	['1'] = 'MYNAV_X', ['2'] = 'MYNAV_B', ['3'] = 'MYNAV_Y', ['4'] = 'MYNAV_A',
 }
 
 local bindOwner = CreateFrame('Frame')   -- 覆盖绑定的归属帧（无需键盘）
 local applied, desired = false, false    -- applied=已生效, desired=期望状态
 
 ns.navActive = false   -- 是否处于导航模式（由 Cursor:Refresh 更新）
-ns.origAction = {}     -- 逻辑键 → 覆盖前的原始绑定名（登录时记录）
 
 local function ApplyOverride(on)
 	if on then
-		for _, info in pairs(GAMEPAD) do
-			SetOverrideBinding(bindOwner, true, info.key, info.bind)
+		for key, bind in pairs(GAMEPAD_KEYS) do
+			SetOverrideBinding(bindOwner, true, key, bind)
 		end
 	else
 		ClearOverrideBindings(bindOwner)
@@ -275,7 +281,7 @@ local function ApplyOverride(on)
 	applied = on
 end
 
--- 常驻覆盖 1~8。战斗中不允许改动绑定，先记下期望值，出战斗后再补上
+-- 切换覆盖绑定；战斗中被禁改，先记下期望值，出战斗后再补上
 function ns.SetGamepadOverride(on)
 	desired = on and true or false
 	if not InCombatLockdown() and desired ~= applied then
@@ -287,18 +293,6 @@ bindOwner:RegisterEvent('PLAYER_REGEN_ENABLED')
 bindOwner:SetScript('OnEvent', function()
 	if desired ~= applied and not InCombatLockdown() then ApplyOverride(desired) end
 end)
-
--- 按键统一入口：导航模式 → 导航/动作；否则还原成覆盖前的原始功能（动作条 1~8）
-function MyNavigate:OnGamepadKey(name)
-	if ns.navActive then
-		local key = DIRECTION_KEYS[name]
-		if key then ns.Cursor:UIControl(key, KEY.STATE_DOWN) else ns.Cursor:Action(name) end
-		return
-	end
-	local orig = ns.origAction[name]
-	local slot = orig and orig:match('^ACTIONBUTTON(%d+)$')
-	if slot then pcall(UseAction, tonumber(slot)) end
-end
 
 local frame = CreateFrame('Frame')
 frame:RegisterEvent('PLAYER_LOGIN')
@@ -321,12 +315,16 @@ frame:SetScript('OnEvent', function()
 			if k:sub(1, 10) == 'MyNavigate' then extra[k] = nil end
 		end
 	end
-	-- 记录 1~8 覆盖前的原始绑定（必须在应用覆盖之前读取），供非导航时还原
-	for name, info in pairs(GAMEPAD) do
-		ns.origAction[name] = GetBindingAction(info.key)
+	-- 清理旧版本残留：曾被绑到 MYNAV_* 的实体键（SHIFT-1..8、F5..F10 等）应解除，
+	-- 现在按键由覆盖绑定驱动，这些残留绑定留着会重复触发
+	local cleaned = false
+	for _, bind in pairs(GAMEPAD_KEYS) do
+		local k1, k2 = GetBindingKey(bind)
+		if k1 then SetBinding(k1, nil) cleaned = true end
+		if k2 then SetBinding(k2, nil) cleaned = true end
 	end
-	-- 常驻覆盖 1~8 → MYNAV_*，之后由 OnGamepadKey 决定导航还是原始功能
-	if MyNavigateDB.enabled ~= false then ns.SetGamepadOverride(true) end
+	if cleaned then SaveBindings(GetCurrentBindingSet()) end
+	-- 覆盖绑定不在这里应用：交由 Cursor:Refresh 依据「是否真有可导航节点」动态开关
 end)
 
 local LABELS = {
@@ -349,7 +347,7 @@ SlashCmdList['MYNAV'] = function(msg)
 	if arg == '' then arg = nil end
 	if cmd == 'on' then
 		MyNavigateDB.enabled = true
-		if ns.SetGamepadOverride then ns.SetGamepadOverride(true) end
+		ns.Cursor:Refresh()   -- 由「当前是否有可导航窗口」重新判定并开关覆盖绑定
 		print('|cff739BD0MyNavigate|r: 已开启（窗口打开时 1~8 键导航）')
 	elseif cmd == 'off' then
 		MyNavigateDB.enabled = false
