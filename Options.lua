@@ -8,7 +8,6 @@
 ---------------------------------------------------------------------
 local ADDON, ns = ...
 
-local NL = string.char(10)
 local ACCENT = '|cff739BD0'   -- 插件聊天提示里统一使用的强调色
 
 local panel = CreateFrame('Frame', 'MyNavigateOptionsPanel', UIParent)
@@ -203,13 +202,62 @@ nameBox:SetBackdropColor(0, 0, 0, 0.8)
 nameBox:SetBackdropBorderColor(0.5, 0.5, 0.5, 1)
 nameBox:SetScript('OnEscapePressed', function(self) self:ClearFocus() end)
 
-local listText = content:CreateFontString(nil, 'ARTWORK', 'GameFontHighlight')
-listText:SetPoint('TOPLEFT', nameBox, 'BOTTOMLEFT', 0, -14)
-listText:SetJustifyH('LEFT')
+-- 列表标题行 + 「删除选中」按钮
+local listHead = content:CreateFontString(nil, 'ARTWORK', 'GameFontHighlight')
+listHead:SetPoint('TOPLEFT', nameBox, 'BOTTOMLEFT', 0, -14)
+listHead:SetJustifyH('LEFT')
+listHead:SetText(ACCENT .. '当前自定义白名单：|r')
+
+local listHint2 = content:CreateFontString(nil, 'ARTWORK', 'GameFontHighlightSmall')
+listHint2:SetPoint('TOPLEFT', listHead, 'BOTTOMLEFT', 0, -6)
+listHint2:SetJustifyH('LEFT')
+listHint2:SetText('点击条目即可选中（再点一次取消），选中后点「删除选中」移除。')
+
+local delBtn = CreateFrame('Button', nil, content, 'UIPanelButtonTemplate')
+delBtn:SetSize(88, 22)
+delBtn:SetPoint('LEFT', listHead, 'RIGHT', 10, 0)
+delBtn:SetText('删除选中')
+delBtn:Disable()
+
+-- 白名单条目列表：每行是一个可点选的按钮，选中时显示淡蓝色底纹
+local listFrame = CreateFrame('Frame', nil, content)
+listFrame:SetPoint('TOPLEFT', listHint2, 'BOTTOMLEFT', 0, -8)
+listFrame:SetWidth(444)
+listFrame:SetHeight(18)
+
+local rows = {}
+local selected
+local UpdateList   -- 前向声明：行按钮回调会用到
+
+local function AcquireRow(i)
+	local row = rows[i]
+	if not row then
+		row = CreateFrame('Button', nil, listFrame)
+		row:SetHeight(18)
+		row:SetHighlightTexture('Interface\\QuestFrame\\UI-QuestTitleHighlight')
+		local text = row:CreateFontString(nil, 'ARTWORK', 'GameFontHighlightSmall')
+		text:SetPoint('LEFT', 6, 0)
+		text:SetJustifyH('LEFT')
+		row.text = text
+		local sel = row:CreateTexture(nil, 'BACKGROUND')
+		sel:SetTexture('Interface\\Buttons\\WHITE8X8')
+		sel:SetVertexColor(0.45, 0.61, 0.82, 0.35)
+		sel:SetAllPoints(row)
+		sel:Hide()
+		row.sel = sel
+		row:SetScript('OnClick', function(self)
+			if not self.entryName then return end
+			selected = (selected == self.entryName) and nil or self.entryName
+			UpdateList()
+		end)
+		rows[i] = row
+	end
+	return row
+end
 
 -- 内容帧高度随实际内容变化（列表最后一项是白名单，会随条目数变高）
 local function UpdateContentHeight()
-	local top, bottom = content:GetTop(), listText:GetBottom()
+	local top, bottom = content:GetTop(), listFrame:GetBottom()
 	if top and bottom then
 		content:SetHeight((top - bottom) + 24)
 	end
@@ -219,18 +267,47 @@ local function Trim(text)
 	return (text or ''):gsub('^%s+', ''):gsub('%s+$', '')
 end
 
-local function UpdateList()
-	local str = ACCENT .. '当前自定义白名单：|r' .. NL
+UpdateList = function()
 	local extra = MyNavigateDB and MyNavigateDB.extra
-	local n = 0
+	local names = {}
 	if extra then
-		for name in pairs(extra) do
-			n = n + 1
-			str = str .. '  ' .. name .. NL
-		end
+		for name in pairs(extra) do names[#names + 1] = name end
 	end
-	if n == 0 then str = str .. '  （暂无，可在上方输入后点「添加」）' end
-	listText:SetText(str)
+	table.sort(names)
+	-- 选中项已被删掉时清掉选中状态
+	if selected and not (extra and extra[selected]) then selected = nil end
+
+	local n = #names
+	if n == 0 then
+		local row = AcquireRow(1)
+		row.entryName = nil
+		row.text:SetText('（暂无，可在上方输入后点「添加」）')
+		row.sel:Hide()
+		row:ClearAllPoints()
+		row:SetPoint('TOPLEFT', listFrame, 'TOPLEFT', 0, 0)
+		row:SetPoint('RIGHT', listFrame, 'RIGHT', 0, 0)
+		row:Show()
+		for i = 2, #rows do rows[i]:Hide() end
+		listFrame:SetHeight(18)
+	else
+		for i = 1, n do
+			local row = AcquireRow(i)
+			row.entryName = names[i]
+			row.text:SetText(names[i])
+			if selected == names[i] then row.sel:Show() else row.sel:Hide() end
+			row:ClearAllPoints()
+			if i == 1 then
+				row:SetPoint('TOPLEFT', listFrame, 'TOPLEFT', 0, 0)
+			else
+				row:SetPoint('TOPLEFT', rows[i - 1], 'BOTTOMLEFT', 0, -2)
+			end
+			row:SetPoint('RIGHT', listFrame, 'RIGHT', 0, 0)
+			row:Show()
+		end
+		for i = n + 1, #rows do rows[i]:Hide() end
+		listFrame:SetHeight(n * 18 + (n - 1) * 2)
+	end
+	if selected then delBtn:Enable() else delBtn:Disable() end
 	UpdateContentHeight()
 end
 
@@ -273,6 +350,16 @@ clearBtn:SetText('清空')
 clearBtn:SetScript('OnClick', function()
 	MyNavigateDB = MyNavigateDB or {}
 	MyNavigateDB.extra = {}
+	selected = nil
+	UpdateList()
+	RefreshCursor()
+end)
+
+-- 删除选中：移除列表中选中的条目
+delBtn:SetScript('OnClick', function()
+	if not selected or not (MyNavigateDB and MyNavigateDB.extra) then return end
+	MyNavigateDB.extra[selected] = nil
+	selected = nil
 	UpdateList()
 	RefreshCursor()
 end)
@@ -286,6 +373,7 @@ end)
 -- 滚动帧尺寸变化时（面板拉伸 / 分辨率变化）重算内容宽度与高度
 scroll:SetScript('OnSizeChanged', function(self, width)
 	content:SetWidth(width)
+	listFrame:SetWidth(width - 16)
 	UpdateContentHeight()
 end)
 
@@ -293,6 +381,7 @@ panel:SetScript('OnShow', function()
 	MyNavigateDB = MyNavigateDB or {}
 	-- 内容宽度跟随滚动帧，滚动条回到顶部
 	content:SetWidth(scroll:GetWidth())
+	listFrame:SetWidth(scroll:GetWidth() - 16)
 	scroll:SetVerticalScroll(0)
 	cbEnabled:SetChecked(MyNavigateDB.enabled ~= false)
 	cbExclusive:SetChecked(MyNavigateDB.exclusive ~= false)

@@ -1,8 +1,8 @@
 ---------------------------------------------------------------------
--- Cursor.lua: 虚拟光标 —— 金色高亮环、动作提示、动作执行
+-- Cursor.lua: 虚拟光标 —— 金色高亮框、动作提示、动作执行
 ---------------------------------------------------------------------
--- 高亮环是一个独立 Texture（UI-ActionButton-Border，必须用 ADD 混合，
--- 否则该贴图的黑色底会显示成黑块），锚定当前节点的四个角；
+-- 高亮框由四条边纹理（WHITE8X8 着色成金色）围成，紧贴当前节点的外沿，
+-- 比单张环纹理更能完整包住不同尺寸的控件；
 -- 旁边用提示框（tooltip 边框 + GameFontNormalSmall）显示四个动作键当前的功能；
 -- ABXY 直接调用控件自己的 Click(button)，等价 ConsolePort 的 ClickWrapper。
 ---------------------------------------------------------------------
@@ -12,19 +12,27 @@ local abs, unpack, next, pairs, pcall = math.abs, unpack, next, pairs, pcall
 local tremove = table.remove
 local NL = string.char(10)   -- 提示框每行之间的换行符
 
-local RING_TEXTURE = 'Interface\\Buttons\\UI-ActionButton-Border'
+local BORDER_TEXTURE = 'Interface\\Buttons\\WHITE8X8'
+local BORDER_COLOR = { 1, 0.88, 0.1 }   -- 金色
+local BORDER_PAD = 4      -- 边框内沿距节点边缘的像素
+local BORDER_THICK = 2    -- 边框粗细
 
 local Cursor = CreateFrame('Frame', 'MyNavigateCursor', UIParent)
 Cursor:SetFrameStrata('TOOLTIP')
 Cursor:SetSize(1, 1)
 Cursor:Hide()
 
-local ring = Cursor:CreateTexture(nil, 'OVERLAY')
-ring:SetTexture(RING_TEXTURE)
-ring:SetBlendMode('ADD')
-ring:SetVertexColor(1, 0.88, 0.1)
-ring:Hide()
-Cursor.ring = ring
+-- 四条边纹理围成矩形金框：上/下两条横贯全宽，左/右两条夹在中间，四角刚好相接。
+-- 直接挂在 Cursor 上（与旧的高亮环同一层级），随 Cursor:Show()/Hide() 一起显隐，
+-- 不再套一层中间 Frame（那样中间帧隐藏时子纹理也不会渲染）。
+local edgeTop = Cursor:CreateTexture(nil, 'OVERLAY')
+local edgeBottom = Cursor:CreateTexture(nil, 'OVERLAY')
+local edgeLeft = Cursor:CreateTexture(nil, 'OVERLAY')
+local edgeRight = Cursor:CreateTexture(nil, 'OVERLAY')
+for _, tex in ipairs({ edgeTop, edgeBottom, edgeLeft, edgeRight }) do
+	tex:SetTexture(BORDER_TEXTURE)
+	tex:SetVertexColor(BORDER_COLOR[1], BORDER_COLOR[2], BORDER_COLOR[3])
+end
 
 -- 提示框：沿用 SimpleCursor 的样式 —— tooltip 边框小框 + GameFontNormalSmall 字号，
 -- 内容仍按当前节点动态生成四个动作键的功能
@@ -145,10 +153,33 @@ function Cursor:GetActionText(node)
 end
 
 function Cursor:SetHighlight(node)
-	self.ring:ClearAllPoints()
-	self.ring:SetPoint('TOPLEFT', node, 'TOPLEFT', -6, 6)
-	self.ring:SetPoint('BOTTOMRIGHT', node, 'BOTTOMRIGHT', 6, -6)
-	self.ring:Show()
+	local pad, thick = BORDER_PAD, BORDER_THICK
+	local outer = pad + thick
+	-- 上边：横贯全宽，内沿在节点上边上方 pad 处
+	edgeTop:ClearAllPoints()
+	edgeTop:SetPoint('TOPLEFT', node, 'TOPLEFT', -outer, outer)
+	edgeTop:SetPoint('TOPRIGHT', node, 'TOPRIGHT', outer, outer)
+	edgeTop:SetHeight(thick)
+	-- 下边
+	edgeBottom:ClearAllPoints()
+	edgeBottom:SetPoint('BOTTOMLEFT', node, 'BOTTOMLEFT', -outer, -outer)
+	edgeBottom:SetPoint('BOTTOMRIGHT', node, 'BOTTOMRIGHT', outer, -outer)
+	edgeBottom:SetHeight(thick)
+	-- 左边：竖直，夹在上下两条之间
+	edgeLeft:ClearAllPoints()
+	edgeLeft:SetPoint('TOPLEFT', node, 'TOPLEFT', -outer, pad)
+	edgeLeft:SetPoint('BOTTOMLEFT', node, 'BOTTOMLEFT', -outer, -pad)
+	edgeLeft:SetWidth(thick)
+	-- 右边
+	edgeRight:ClearAllPoints()
+	edgeRight:SetPoint('TOPRIGHT', node, 'TOPRIGHT', outer, pad)
+	edgeRight:SetPoint('BOTTOMRIGHT', node, 'BOTTOMRIGHT', outer, -pad)
+	edgeRight:SetWidth(thick)
+
+	edgeTop:Show()
+	edgeBottom:Show()
+	edgeLeft:Show()
+	edgeRight:Show()
 end
 
 function Cursor:SetPosition(node)
@@ -184,7 +215,6 @@ function Cursor:HideNode()
 	lastNode, current = nil, nil
 	HintBox:Hide()
 	self:Hide()
-	self.ring:Hide()
 end
 
 -- 顶层父窗口（上溯到 UIParent 之前的那一层）
