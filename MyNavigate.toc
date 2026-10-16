@@ -10,3 +10,4 @@ Bindings.xml
 Node.lua
 Cursor.lua
 Core.lua
+Options.lua

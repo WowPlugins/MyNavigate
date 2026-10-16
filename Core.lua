@@ -19,37 +19,51 @@ local DIRECTION_KEYS = { UP = KEY.UP, DOWN = KEY.DOWN, LEFT = KEY.LEFT, RIGHT = 
 -- 常驻 HUD（动作条、小地图、单位框体等）不在名单内，因此一个窗口都不开时
 -- 不会高亮任何东西，也不会把光标跳到 HUD 上。
 local PANEL_PATTERNS = {
-	-- 背包 / 银行（含 Combuctor 第三方背包）
+	-- 背包 / 银行（含 Combuctor / DragonUI 第三方背包）
 	'^ContainerFrame%d+$', '^BankFrame$', '^GuildBankFrame$',
 	'^CombuctorFrame%d+$', '^CombuctorItem%d+$',
+	'^CombuctorInventoryFrame$', '^CombuctorBankFrame$',
+	'^DragonUI_CombuctorFrame%d+$',
 	-- 角色 / 技能 / 天赋 / 声望
 	'^CharacterFrame$', '^SpellBookFrame$', '^PlayerTalentFrame$',
-	'^SkillsFrame$', '^InspectFrame$',
-	-- 任务 / 对话 / 商贩
+	'^SkillsFrame$', '^SkillFrame$', '^InspectFrame$', '^ReputationFrame$',
+	-- 任务 / 对话 / 商贩 / 训练师
 	'^QuestLogFrame$', '^QuestLogPopupDetailFrame$', '^QuestFrame$',
 	'^GossipFrame$', '^MerchantFrame$', '^QuestChoiceFrame$',
+	'^ClassTrainerFrame$', '^LootFrame$', '^GroupLootFrame%d+$',
 	-- 邮件 / 交易 / 制造
 	'^MailFrame$', '^OpenMailFrame$', '^SendMailFrame$', '^InboxFrame$',
 	'^TradeFrame$', '^TradeSkillFrame$', '^CraftFrame$',
 	-- 社交 / 公会 / 团队
 	'^FriendsFrame$', '^GuildFrame$', '^GuildInviteFrame$',
+	'^GuildRegistrarFrame$', '^LookingForGuildFrame$',
 	'^WhoFrame$', '^RaidFrame$', '^RaidGroupFrame$',
 	-- 地图 / 飞行 / 换装 / PVP / 地下城
 	'^WorldMapFrame$', '^TaxiFrame$', '^DressUpFrame$',
 	'^PVPFrame$', '^PVPParentFrame$', '^PVEFrame$', '^HonorFrame$',
+	'^ArenaFrame$', '^ArenaRegistrarFrame$', '^PVPBannerFrame$',
 	'^LFDParentFrame$', '^LFDQueueFrame$', '^LFDRoleCheckPopup$',
-	'^LFGDungeonReadyDialog$', '^LFGInvitePopup$',
+	'^LFGDungeonReadyDialog$', '^LFGInvitePopup$', '^LFGParentFrame$',
 	-- 系统 / 设置 / 弹窗
 	'^GameMenuFrame$', '^HelpFrame$', '^HelpMenuFrame$',
 	'^InterfaceOptionsFrame$', '^VideoOptionsFrame$', '^AudioOptionsFrame$',
 	'^KeyBindingFrame$', '^MacroFrame$', '^AddonList$',
 	'^ChatConfigFrame$', '^ChatMenu$', '^TimeManagerFrame$',
 	'^StaticPopup%d+$', '^DropDownList%d+$',
+	-- 沉浸式对话框
+	'^ImmersionFrame$', '^ImmersionFrameTalkBox$',
 	-- 其它窗口
 	'^ItemTextFrame$', '^ItemSocketingFrame$', '^PetitionFrame$',
 	'^StableFrame$', '^TabardFrame$', '^BarberShopFrame$',
 	'^StackSplitFrame$', '^CoinPickupFrame$', '^TutorialFrame$',
 	'^ReadyCheckFrame$', '^SplashFrame$', '^AchievementFrame$',
+}
+
+-- 弹窗 / 下拉菜单：只要这些窗口可见，就把导航范围限定在它们里面
+-- （与 SimpleCursor 的 GetInteractableNodes 一致：有弹窗时不再理会背后的窗口）
+local EXCLUSIVE_FRAMES = {
+	'StaticPopup1', 'StaticPopup2', 'StaticPopup3', 'StaticPopup4',
+	'DropDownList1', 'DropDownList2', 'DropDownList3',
 }
 
 local function MatchesPanel(name)
@@ -68,6 +82,15 @@ end
 
 function ns.GetRootFrames()
 	local roots = {}
+	-- 弹窗 / 下拉独占：屏幕上只要有它们，就只导航它们，忽略背后的窗口
+	-- （可用设置面板里的「弹窗独占」开关关闭；默认开启）
+	if not (MyNavigateDB and MyNavigateDB.exclusive == false) then
+		for i = 1, #EXCLUSIVE_FRAMES do
+			local frame = _G[EXCLUSIVE_FRAMES[i]]
+			if frame and frame:IsVisible() then roots[#roots + 1] = frame end
+		end
+		if #roots > 0 then return roots end
+	end
 	for _, frame in ipairs({ UIParent:GetChildren() }) do
 		if frame:IsVisible() and ns.IsNavigableRoot(frame) then
 			roots[#roots + 1] = frame
@@ -259,11 +282,32 @@ end
 --         * 战斗中关闭的窗口，本轮战斗内按键仍停在导航态，战斗结束后才还原。
 --       只要窗口是在非战斗时打开/关闭（最常见情形），战斗内外都能正确工作。
 ---------------------------------------------------------------------
--- 物理键 → 绑定名（硬编码）：方向 5/6/7/8，动作 X/B/Y/A 对应 1/2/3/4
-local GAMEPAD_KEYS = {
-	['5'] = 'MYNAV_UP', ['6'] = 'MYNAV_DOWN', ['7'] = 'MYNAV_LEFT', ['8'] = 'MYNAV_RIGHT',
-	['1'] = 'MYNAV_X', ['2'] = 'MYNAV_B', ['3'] = 'MYNAV_Y', ['4'] = 'MYNAV_A',
+-- 物理键 → 绑定名：默认方向 5/6/7/8，动作 X/B/Y/A 分别对应 1/2/3/4。
+-- 这些键都可以在设置面板里改，改后的值存在 MyNavigateDB.keys 里。
+local DEFAULT_KEYS = {
+	UP = '5', DOWN = '6', LEFT = '7', RIGHT = '8',
+	X = '1', B = '2', Y = '3', A = '4',
 }
+ns.DEFAULT_KEYS = DEFAULT_KEYS
+ns.KEY_ACTIONS = { 'UP', 'DOWN', 'LEFT', 'RIGHT', 'A', 'B', 'X', 'Y' }
+
+-- 读取某个动作当前绑定的物理键（未设置过则用默认值）
+function ns.GetKey(action)
+	local keys = MyNavigateDB and MyNavigateDB.keys
+	local k = keys and keys[action]
+	return (k and k ~= '') and k or DEFAULT_KEYS[action]
+end
+
+-- 依据当前设置拼出「物理键 → MYNAV_* 绑定名」的映射
+local function BuildKeyMap()
+	local map = {}
+	for i = 1, #ns.KEY_ACTIONS do
+		local action = ns.KEY_ACTIONS[i]
+		local key = ns.GetKey(action)
+		if key then map[key] = 'MYNAV_' .. action end
+	end
+	return map
+end
 
 local bindOwner = CreateFrame('Frame')   -- 覆盖绑定的归属帧（无需键盘）
 local applied, desired = false, false    -- applied=已生效, desired=期望状态
@@ -271,14 +315,19 @@ local applied, desired = false, false    -- applied=已生效, desired=期望状
 ns.navActive = false   -- 是否处于导航模式（由 Cursor:Refresh 更新）
 
 local function ApplyOverride(on)
+	ClearOverrideBindings(bindOwner)
 	if on then
-		for key, bind in pairs(GAMEPAD_KEYS) do
+		local map = BuildKeyMap()
+		for key, bind in pairs(map) do
 			SetOverrideBinding(bindOwner, true, key, bind)
 		end
-	else
-		ClearOverrideBindings(bindOwner)
 	end
 	applied = on
+end
+
+-- 改键后立即按新键重应用覆盖绑定（战斗中不能改，出战斗后由事件兜底）
+function ns.RefreshBindings()
+	if not InCombatLockdown() then ApplyOverride(applied) end
 end
 
 -- 切换覆盖绑定；战斗中被禁改，先记下期望值，出战斗后再补上
@@ -299,6 +348,8 @@ frame:RegisterEvent('PLAYER_LOGIN')
 frame:SetScript('OnEvent', function()
 	MyNavigateDB = MyNavigateDB or {}
 	if MyNavigateDB.enabled == nil then MyNavigateDB.enabled = true end
+	if MyNavigateDB.exclusive == nil then MyNavigateDB.exclusive = true end
+	if MyNavigateDB.hint == nil then MyNavigateDB.hint = true end
 	-- 旧版本用 SetBinding 把 Shift1~8 绑到 MYNAV_*，现已改为固定按键拦截，
 	-- 还原当时保存的原始绑定，避免残留占用
 	if MyNavigateDB.saved then
@@ -318,7 +369,8 @@ frame:SetScript('OnEvent', function()
 	-- 清理旧版本残留：曾被绑到 MYNAV_* 的实体键（SHIFT-1..8、F5..F10 等）应解除，
 	-- 现在按键由覆盖绑定驱动，这些残留绑定留着会重复触发
 	local cleaned = false
-	for _, bind in pairs(GAMEPAD_KEYS) do
+	for i = 1, #ns.KEY_ACTIONS do
+		local bind = 'MYNAV_' .. ns.KEY_ACTIONS[i]
 		local k1, k2 = GetBindingKey(bind)
 		if k1 then SetBinding(k1, nil) cleaned = true end
 		if k2 then SetBinding(k2, nil) cleaned = true end
@@ -431,7 +483,13 @@ SlashCmdList['MYNAV'] = function(msg)
 			walk(root, 0)
 			ns.Debug('共', count, '个')
 		end
+	elseif cmd == 'config' or cmd == '' then
+		if ns.OpenOptions then
+			ns.OpenOptions()
+		else
+			print('|cff739BD0MyNavigate|r: 设置面板未加载')
+		end
 	else
-		print('|cff739BD0MyNavigate|r: /mynav on|off|debug|dump [关键词]|pick|add <帧名>|remove <帧名>|nodes|tree <帧名>|reset')
+		print('|cff739BD0MyNavigate|r: /mynav on|off|config|debug|dump [关键词]|pick|add <帧名>|remove <帧名>|nodes|tree <帧名>|reset')
 	end
 end
