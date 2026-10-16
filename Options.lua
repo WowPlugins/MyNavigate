@@ -14,11 +14,21 @@ local ACCENT = '|cff739BD0'   -- 插件聊天提示里统一使用的强调色
 local panel = CreateFrame('Frame', 'MyNavigateOptionsPanel', UIParent)
 panel.name = 'MyNavigate'
 
-local title = panel:CreateFontString(nil, 'ARTWORK', 'GameFontNormalLarge')
+-- 设置项较多、内容会超出面板高度，所以放进滚动子帧：右侧会有滚动条
+local scroll = CreateFrame('ScrollFrame', 'MyNavigateOptionsScroll', panel, 'UIPanelScrollFrameTemplate')
+scroll:SetPoint('TOPLEFT', panel, 'TOPLEFT', 6, -6)
+scroll:SetPoint('BOTTOMRIGHT', panel, 'BOTTOMRIGHT', -30, 6)
+
+local content = CreateFrame('Frame', nil, scroll)
+content:SetWidth(460)
+content:SetHeight(500)
+scroll:SetScrollChild(content)
+
+local title = content:CreateFontString(nil, 'ARTWORK', 'GameFontNormalLarge')
 title:SetPoint('TOPLEFT', 16, -16)
 title:SetText('MyNavigate 手柄导航设置')
 
-local desc = panel:CreateFontString(nil, 'ARTWORK', 'GameFontHighlightSmall')
+local desc = content:CreateFontString(nil, 'ARTWORK', 'GameFontHighlightSmall')
 desc:SetPoint('TOPLEFT', title, 'BOTTOMLEFT', 0, -8)
 desc:SetText('方向键在窗口内移动光标，ABXY 执行动作。下面可以开关功能、设置按键、维护白名单。')
 
@@ -51,7 +61,7 @@ local function CreateCheck(parent, labelText, key, tooltip, onChange)
 	return cb
 end
 
-local cbEnabled = CreateCheck(panel, '启用导航', 'enabled',
+local cbEnabled = CreateCheck(content, '启用导航', 'enabled',
 	'关闭后不再接管 1~8 键，它们回到各自的原始绑定', function(on)
 		if on then
 			ns.Cursor:Refresh()
@@ -63,19 +73,19 @@ local cbEnabled = CreateCheck(panel, '启用导航', 'enabled',
 	end)
 cbEnabled:SetPoint('TOPLEFT', desc, 'BOTTOMLEFT', 0, -16)
 
-local cbExclusive = CreateCheck(panel, '弹窗 / 下拉独占', 'exclusive',
+local cbExclusive = CreateCheck(content, '弹窗 / 下拉独占', 'exclusive',
 	'屏幕上出现弹窗或下拉菜单时，只导航它们，忽略其背后的窗口', function()
 		ns.Cursor:Refresh()
 	end)
 cbExclusive:SetPoint('TOPLEFT', cbEnabled, 'BOTTOMLEFT', 0, -6)
 
-local cbHint = CreateCheck(panel, '显示动作提示框', 'hint',
+local cbHint = CreateCheck(content, '显示动作提示框', 'hint',
 	'在光标旁的提示框里显示四个动作键当前的功能', function()
 		ns.Cursor:Refresh()
 	end)
 cbHint:SetPoint('TOPLEFT', cbExclusive, 'BOTTOMLEFT', 0, -6)
 
-local cbDebug = CreateCheck(panel, '调试输出', 'debug',
+local cbDebug = CreateCheck(content, '调试输出', 'debug',
 	'在聊天框打印扫描到的面板与节点，便于排查', function(on)
 		if on then
 			ns.DumpFrames()
@@ -87,11 +97,11 @@ cbDebug:SetPoint('TOPLEFT', cbHint, 'BOTTOMLEFT', 0, -6)
 ---------------------------------------------------------------------
 -- 按键设置：捕获手柄物理键，默认值为当前值
 ---------------------------------------------------------------------
-local keyTitle = panel:CreateFontString(nil, 'ARTWORK', 'GameFontNormalLarge')
+local keyTitle = content:CreateFontString(nil, 'ARTWORK', 'GameFontNormalLarge')
 keyTitle:SetPoint('TOPLEFT', cbDebug, 'BOTTOMLEFT', 0, -20)
 keyTitle:SetText('按键设置')
 
-local keyHint = panel:CreateFontString(nil, 'ARTWORK', 'GameFontHighlight')
+local keyHint = content:CreateFontString(nil, 'ARTWORK', 'GameFontHighlight')
 keyHint:SetPoint('TOPLEFT', keyTitle, 'BOTTOMLEFT', 0, -8)
 keyHint:SetJustifyH('LEFT')
 keyHint:SetText('点一下按钮，再直接按下手柄对应的物理键即可（按 ESC 取消）。')
@@ -146,38 +156,38 @@ local function CreateKeyButton(parent, action, labelText)
 end
 
 -- 方向键一列
-local kbUp = CreateKeyButton(panel, 'UP', '上:')
+local kbUp = CreateKeyButton(content, 'UP', '上:')
 kbUp:SetPoint('TOPLEFT', keyHint, 'BOTTOMLEFT', 0, -10)
-local kbDown = CreateKeyButton(panel, 'DOWN', '下:')
+local kbDown = CreateKeyButton(content, 'DOWN', '下:')
 kbDown:SetPoint('TOPLEFT', kbUp, 'BOTTOMLEFT', 0, -2)
-local kbLeft = CreateKeyButton(panel, 'LEFT', '左:')
+local kbLeft = CreateKeyButton(content, 'LEFT', '左:')
 kbLeft:SetPoint('TOPLEFT', kbDown, 'BOTTOMLEFT', 0, -2)
-local kbRight = CreateKeyButton(panel, 'RIGHT', '右:')
+local kbRight = CreateKeyButton(content, 'RIGHT', '右:')
 kbRight:SetPoint('TOPLEFT', kbLeft, 'BOTTOMLEFT', 0, -2)
 
 -- 动作键一列
-local kbA = CreateKeyButton(panel, 'A', 'A (左键):')
+local kbA = CreateKeyButton(content, 'A', 'A (左键):')
 kbA:SetPoint('TOPLEFT', kbUp, 'TOPRIGHT', 24, 0)
-local kbB = CreateKeyButton(panel, 'B', 'B (右键):')
+local kbB = CreateKeyButton(content, 'B', 'B (右键):')
 kbB:SetPoint('TOPLEFT', kbA, 'BOTTOMLEFT', 0, -2)
-local kbX = CreateKeyButton(panel, 'X', 'X (左键):')
+local kbX = CreateKeyButton(content, 'X', 'X (左键):')
 kbX:SetPoint('TOPLEFT', kbB, 'BOTTOMLEFT', 0, -2)
-local kbY = CreateKeyButton(panel, 'Y', 'Y (特殊):')
+local kbY = CreateKeyButton(content, 'Y', 'Y (特殊):')
 kbY:SetPoint('TOPLEFT', kbX, 'BOTTOMLEFT', 0, -2)
 
 ---------------------------------------------------------------------
 -- 自定义白名单
 ---------------------------------------------------------------------
-local listTitle = panel:CreateFontString(nil, 'ARTWORK', 'GameFontNormalLarge')
+local listTitle = content:CreateFontString(nil, 'ARTWORK', 'GameFontNormalLarge')
 listTitle:SetPoint('TOPLEFT', kbRight, 'BOTTOMLEFT', 0, -24)
 listTitle:SetText('导航白名单')
 
-local listHint = panel:CreateFontString(nil, 'ARTWORK', 'GameFontHighlight')
+local listHint = content:CreateFontString(nil, 'ARTWORK', 'GameFontHighlight')
 listHint:SetPoint('TOPLEFT', listTitle, 'BOTTOMLEFT', 0, -8)
 listHint:SetJustifyH('LEFT')
 listHint:SetText('输入窗口名即可让它成为导航目标（用 /fstack 查看名字，内置白名单已覆盖常见窗口）。')
 
-local nameBox = CreateFrame('EditBox', nil, panel)
+local nameBox = CreateFrame('EditBox', nil, content)
 nameBox:SetSize(160, 24)
 nameBox:SetPoint('TOPLEFT', listHint, 'BOTTOMLEFT', 0, -12)
 nameBox:SetFontObject('ChatFontNormal')
@@ -193,9 +203,17 @@ nameBox:SetBackdropColor(0, 0, 0, 0.8)
 nameBox:SetBackdropBorderColor(0.5, 0.5, 0.5, 1)
 nameBox:SetScript('OnEscapePressed', function(self) self:ClearFocus() end)
 
-local listText = panel:CreateFontString(nil, 'ARTWORK', 'GameFontHighlight')
+local listText = content:CreateFontString(nil, 'ARTWORK', 'GameFontHighlight')
 listText:SetPoint('TOPLEFT', nameBox, 'BOTTOMLEFT', 0, -14)
 listText:SetJustifyH('LEFT')
+
+-- 内容帧高度随实际内容变化（列表最后一项是白名单，会随条目数变高）
+local function UpdateContentHeight()
+	local top, bottom = content:GetTop(), listText:GetBottom()
+	if top and bottom then
+		content:SetHeight((top - bottom) + 24)
+	end
+end
 
 local function Trim(text)
 	return (text or ''):gsub('^%s+', ''):gsub('%s+$', '')
@@ -213,11 +231,12 @@ local function UpdateList()
 	end
 	if n == 0 then str = str .. '  （暂无，可在上方输入后点「添加」）' end
 	listText:SetText(str)
+	UpdateContentHeight()
 end
 
 local function RefreshCursor() ns.Cursor:Refresh() end
 
-local addBtn = CreateFrame('Button', nil, panel, 'UIPanelButtonTemplate')
+local addBtn = CreateFrame('Button', nil, content, 'UIPanelButtonTemplate')
 addBtn:SetSize(64, 22)
 addBtn:SetPoint('LEFT', nameBox, 'RIGHT', 8, 0)
 addBtn:SetText('添加')
@@ -233,7 +252,7 @@ addBtn:SetScript('OnClick', function()
 	RefreshCursor()
 end)
 
-local removeBtn = CreateFrame('Button', nil, panel, 'UIPanelButtonTemplate')
+local removeBtn = CreateFrame('Button', nil, content, 'UIPanelButtonTemplate')
 removeBtn:SetSize(64, 22)
 removeBtn:SetPoint('LEFT', addBtn, 'RIGHT', 6, 0)
 removeBtn:SetText('移除')
@@ -247,7 +266,7 @@ removeBtn:SetScript('OnClick', function()
 	RefreshCursor()
 end)
 
-local clearBtn = CreateFrame('Button', nil, panel, 'UIPanelButtonTemplate')
+local clearBtn = CreateFrame('Button', nil, content, 'UIPanelButtonTemplate')
 clearBtn:SetSize(64, 22)
 clearBtn:SetPoint('LEFT', removeBtn, 'RIGHT', 6, 0)
 clearBtn:SetText('清空')
@@ -264,8 +283,17 @@ nameBox:SetScript('OnEnterPressed', function(self)
 	self:ClearFocus()
 end)
 
+-- 滚动帧尺寸变化时（面板拉伸 / 分辨率变化）重算内容宽度与高度
+scroll:SetScript('OnSizeChanged', function(self, width)
+	content:SetWidth(width)
+	UpdateContentHeight()
+end)
+
 panel:SetScript('OnShow', function()
 	MyNavigateDB = MyNavigateDB or {}
+	-- 内容宽度跟随滚动帧，滚动条回到顶部
+	content:SetWidth(scroll:GetWidth())
+	scroll:SetVerticalScroll(0)
 	cbEnabled:SetChecked(MyNavigateDB.enabled ~= false)
 	cbExclusive:SetChecked(MyNavigateDB.exclusive ~= false)
 	cbHint:SetChecked(MyNavigateDB.hint ~= false)
