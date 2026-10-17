@@ -32,8 +32,12 @@ Interface\AddOns\MyNavigate\
 | 3 / Y| 特殊（`SpecialClick` / 输入框聚焦 / 兜底左键）|
 | 4 / A| 左键点击                                      |
 
-按键通过**覆盖绑定**（`SetOverrideBinding`）动态接管：只有当屏幕上存在可导航节点时才生效，
+按键通过**覆盖绑定**动态接管：只有当屏幕上存在可导航节点时才生效，
 窗口全关后自动还原到各自的原始绑定，不写存档、不污染按键设置。
+方向键绑成 `SetOverrideBinding`（自己处理移动），动作键（ABXY）在有名字的节点上绑成
+`SetOverrideBindingClick`——把点击交回暴雪安全框架执行，这样背包里的「使用 / 拾取」
+等受保护操作（`UseContainerItem`）才不会因插件直接调用而被拦下；无名节点或输入框
+才退回 Lua 处理。
 
 ## 使用
 

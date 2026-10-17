@@ -298,29 +298,66 @@ function ns.GetKey(action)
 	return (k and k ~= '') and k or DEFAULT_KEYS[action]
 end
 
--- 依据当前设置拼出「物理键 → MYNAV_* 绑定名」的映射
-local function BuildKeyMap()
-	local map = {}
-	for i = 1, #ns.KEY_ACTIONS do
-		local action = ns.KEY_ACTIONS[i]
-		local key = ns.GetKey(action)
-		if key then map[key] = 'MYNAV_' .. action end
-	end
-	return map
-end
-
 local bindOwner = CreateFrame('Frame')   -- 覆盖绑定的归属帧（无需键盘）
 local applied, desired = false, false    -- applied=已生效, desired=期望状态
 
 ns.navActive = false   -- 是否处于导航模式（由 Cursor:Refresh 更新）
 
+-- 动作键 → 安全点击时用的鼠标键（A/X 左键，B 右键；Y 另见 SafeClick 的判断）
+local ACTION_MOUSE = { A = 'LeftButton', B = 'RightButton', X = 'LeftButton', Y = 'LeftButton' }
+
+-- 判断某动作键能否走「安全点击」：节点必须有名字，且不能是需要 Lua 特殊处理的节点
+--（Y 键对「自定义 SpecialClick / 输入框聚焦」只能交给 Lua，安全点击表达不了）。
+-- 不能走安全点击时返回 nil，调用方回退到 MYNAV_* 命令绑定。
+local function SafeClick(node, action)
+	if not node or not node.GetName then return nil end
+	local name = node:GetName()
+	if not name then return nil end
+	-- 输入框没有可点击的语义，交给 Lua 处理（Y 会去聚焦它）
+	if node.IsObjectType and node:IsObjectType('EditBox') then return nil end
+	-- Y 的自定义特殊点击是 Lua 函数，安全点击表达不了
+	if action == 'Y' and node.SpecialClick then return nil end
+	return name, ACTION_MOUSE[action] or 'LeftButton'
+end
+
+-- 当前期望绑定的动作节点（由 Cursor 切换节点时通过 ns.SetActionNode 更新）
+local actionNode
+
+-- 重设 4 个动作键的覆盖绑定：
+--   * 节点有名字 → SetOverrideBindingClick：点击交给暴雪安全框架执行。
+--     背包里「使用 / 拾取」这类受保护操作（UseContainerItem 等）只有走这条路
+--     才不会被 ADDON_ACTION_BLOCKED（"暴雪自己的代码才能使用的接口"）拦下；
+--   * 无名节点 / Y 的特殊分支 → 退回 MYNAV_* 命令，由 Cursor:Action 用 Lua 处理。
+local function ApplyActionKeys(node)
+	for _, action in ipairs({ 'A', 'B', 'X', 'Y' }) do
+		local key = ns.GetKey(action)
+		if key then
+			local btnName, mouse = SafeClick(node, action)
+			if btnName then
+				SetOverrideBindingClick(bindOwner, true, key, btnName, mouse)
+			else
+				SetOverrideBinding(bindOwner, true, key, 'MYNAV_' .. action)
+			end
+		end
+	end
+end
+
+-- 节点变化时更新动作键绑定（战斗中禁止改绑定，先记下，出战斗后补应用）
+function ns.SetActionNode(node)
+	actionNode = node
+	if applied and not InCombatLockdown() then ApplyActionKeys(node) end
+end
+
 local function ApplyOverride(on)
 	ClearOverrideBindings(bindOwner)
 	if on then
-		local map = BuildKeyMap()
-		for key, bind in pairs(map) do
-			SetOverrideBinding(bindOwner, true, key, bind)
+		-- 方向键：普通命令绑定，走 Cursor:UIControl 的移动逻辑
+		for _, action in ipairs({ 'UP', 'DOWN', 'LEFT', 'RIGHT' }) do
+			local key = ns.GetKey(action)
+			if key then SetOverrideBinding(bindOwner, true, key, 'MYNAV_' .. action) end
 		end
+		-- 动作键：安全点击绑定，随当前节点变化
+		ApplyActionKeys(ns.Cursor and ns.Cursor:GetCurrentNode() or nil)
 	end
 	applied = on
 end
@@ -340,7 +377,10 @@ end
 
 bindOwner:RegisterEvent('PLAYER_REGEN_ENABLED')
 bindOwner:SetScript('OnEvent', function()
-	if desired ~= applied and not InCombatLockdown() then ApplyOverride(desired) end
+	if InCombatLockdown() then return end
+	if desired ~= applied then ApplyOverride(desired) end
+	-- 战斗中节点变化时被搁置的动作键绑定，在这里补应用
+	if applied then ApplyActionKeys(actionNode) end
 end)
 
 local frame = CreateFrame('Frame')

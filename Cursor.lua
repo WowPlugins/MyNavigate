@@ -208,6 +208,8 @@ function Cursor:SetNode(node, object, super)
 	end
 	self:SetPosition(node)
 	if super then Scroll:To(node, super) end
+	-- 把动作键重绑成「安全点击该节点」，由暴雪安全框架执行点击
+	if ns.SetActionNode then ns.SetActionNode(node) end
 end
 
 function Cursor:HideNode()
@@ -215,6 +217,7 @@ function Cursor:HideNode()
 	lastNode, current = nil, nil
 	HintBox:Hide()
 	self:Hide()
+	if ns.SetActionNode then ns.SetActionNode(nil) end
 end
 
 -- 顶层父窗口（上溯到 UIParent 之前的那一层）
