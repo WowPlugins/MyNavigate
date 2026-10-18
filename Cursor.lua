@@ -86,7 +86,14 @@ local function IsBagItem(node)
 	local parent = node.GetParent and node:GetParent()
 	local pn = parent and parent.GetName and parent:GetName()
 	local nn = node.GetName and node:GetName()
-	return (pn and nn and pn:match('^ContainerFrame') and nn:match(pn..'Item')) and true
+	return (pn and nn and pn:match('^ContainerFrame') and nn:match(pn..'Item')) and true or false
+end
+
+-- 「无名 + 受保护」的控件（如安全动作按钮）：动作键走不了 SetOverrideBindingClick
+-- （它是按帧名找按钮的，无名帧没有名字），插件也不能直接 :Click（会触发安全执行环境报错），
+-- 手柄点不动它。导航落上去时在提示框里明确告知玩家，避免按了没反应还以为是插件坏了。
+local function IsUnclickable(node)
+	return (node.IsProtected and node:IsProtected() and not (node.GetName and node:GetName())) and true or false
 end
 
 function Scroll:Offset()
@@ -127,6 +134,10 @@ local ACTION_COLOR = {
 }
 
 function Cursor:GetActionText(node)
+	-- 点不动的节点：不给四个动作键的功能说明，直接提示原因
+	if IsUnclickable(node) then
+		return '|cFFFF5555此控件受保护，手柄无法点击|r'
+	end
 	local object = current and current.object
 	local bag = IsBagItem(node)
 	local function name(n)
@@ -186,8 +197,9 @@ function Cursor:SetPosition(node)
 	self:SetHighlight(node)
 	self:ClearAllPoints()
 	self:SetPoint('CENTER', node, 'CENTER', 0, 0)
-	-- 提示框贴在节点右上角外侧，尺寸按文字自适应（与 SimpleCursor 一致）
-	if MyNavigateDB and MyNavigateDB.hint == false then
+	-- 提示框贴在节点右上角外侧，尺寸按文字自适应（与 SimpleCursor 一致）。
+	-- 点不动的节点属于提醒，即使关掉了常规提示也照样显示，避免按了没反应还以为插件坏了。
+	if MyNavigateDB and MyNavigateDB.hint == false and not IsUnclickable(node) then
 		HintBox:Hide()
 	else
 		HintText:SetText(self:GetActionText(node))
@@ -302,6 +314,18 @@ function Cursor:UIControl(key, state)
 	return current and current.node
 end
 
+-- 受保护的帧（安全模板：安全动作按钮等）不能由插件直接 :Click —— 会触发暴雪安全执行
+-- 环境报错（SecureHandlers: "Invalid access of managed environments table"），且这个错误在
+-- 安全环境里抛出、pcall 拦不住。有名字的受保护节点已由 Core.lua 用 SetOverrideBindingClick
+-- 交给安全框架点击；无名节点既没法覆盖绑定、也不能直接点击，只能跳过（调试模式会打印出来）。
+local function CanDirectClick(node)
+	if node.IsProtected and node:IsProtected() then
+		Debug('跳过受保护节点', node:GetName() or '(无名)', node:GetObjectType())
+		return false
+	end
+	return true
+end
+
 -- 动作键入口：A/X/B 直接 Click，Y 走特殊分支（SpecialClick / 聚焦输入框 / 兜底左键）
 function Cursor:Action(name)
 	if not current then self:Refresh() end
@@ -313,10 +337,10 @@ function Cursor:Action(name)
 			pcall(node.SpecialClick, node)
 		elseif node:IsObjectType('EditBox') then
 			node:SetFocus(true)
-		elseif node.Click then
+		elseif node.Click and CanDirectClick(node) then
 			pcall(node.Click, node, 'LeftButton')
 		end
-	elseif mapped and node.Click then
+	elseif mapped and node.Click and CanDirectClick(node) then
 		pcall(node.Click, node, mapped)
 	end
 end
