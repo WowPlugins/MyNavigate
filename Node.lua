@@ -223,6 +223,8 @@ end
 
 -- 方向选择：直接在缓存上遍历、只保留「当前最优」，不再为每个候选建 {x,y,h,v} 表
 -- （原来一次按键要分配 N 张小表 + 一张候选表，是高频 GC 的来源之一）。
+-- 注意：返回的是缓存项 item（含 node/object/super），而不是帧本身，
+-- 调用方 Cursor:MoveTo 需要的是 item。
 function Node:GetBestCandidate(cur, key, curNodeChanged)
 	local comparator = self.distance[key]
 	if not (cur and comparator) then return cur, curNodeChanged end
@@ -231,14 +233,13 @@ function Node:GetBestCandidate(cur, key, curNodeChanged)
 	local vMult = (key == KEY.LEFT or key == KEY.RIGHT) and self.scalar or 1
 	local bestDist
 	for _, destination in self:IterateCache() do
-		local candidate = destination.node
-		local destX, destY = candidate:GetCenter()
+		local destX, destY = destination.node:GetCenter()
 		if destX and destY then
 			local distX, distY = self:GetDistance(thisX, thisY, destX, destY)
 			if comparator(destX, destY, distX, distY, thisX, thisY) then
 				local dist = vec2Dlen(distX * hMult, distY * vMult)
 				if not bestDist or dist < bestDist then
-					bestDist, cur, curNodeChanged = dist, candidate, true
+					bestDist, cur, curNodeChanged = dist, destination, true
 				end
 			end
 		end
@@ -252,14 +253,13 @@ function Node:GetClosestCandidate(cur, key, curNodeChanged)
 	local thisX, thisY = cur.node:GetCenter()
 	local bestDist
 	for _, destination in self:IterateCache() do
-		local candidate = destination.node
-		local destX, destY = candidate:GetCenter()
+		local destX, destY = destination.node:GetCenter()
 		if destX and destY then
 			local distX, distY = self:GetDistance(thisX, thisY, destX, destY)
 			if comparator(destX, destY, distX, distY, thisX, thisY) then
 				local dist = vec2Dlen(distX, distY)
 				if not bestDist or dist < bestDist then
-					bestDist, cur = dist, candidate
+					bestDist, cur = dist, destination
 				end
 			end
 		end
