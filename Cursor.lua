@@ -369,8 +369,12 @@ end
 -- 动作键入口：A/X/B 直接 Click，Y 走特殊分支（SpecialClick / 聚焦输入框 / 兜底左键）
 function Cursor:Action(name)
 	if not current then self:Refresh() end
-	if not current then return end
+	-- 金框没显示（无当前节点 / 被滚出视口 / 导航未生效）时，动作键不响应
+	if not (current and Cursor:IsShown()) then return end
 	local node, mapped = current.node, ACTION_MAP[name]
+	-- 兜底：金框刚被滚出视口、还没轮到 OnUpdate（0.1s）把它收起时，
+	-- 也不要点到看不见的控件
+	if not Node:IsDrawn(node, current.super) then return end
 	Debug('动作', name, '->', mapped, node:GetName() or node:GetObjectType())
 	if mapped == 'Special' then
 		if node.SpecialClick then
@@ -416,17 +420,37 @@ function Cursor:SelectRoot(root)
 	return true
 end
 
+-- 当前节点被滚出滚动帧视口（或被遮挡）时收起光标：
+-- 金框和提示框挂在 UIParent 的 TOOLTIP 层级、不受滚动帧裁剪，不收起就会跟着
+-- 节点画到滚动帧外面。current 保留，滚回来或再按方向键会自动恢复。
+local function SetCursorDrawn(drawn)
+	if not current then return end
+	if drawn then
+		if not Cursor:IsShown() then
+			Cursor:SetPosition(current.node)
+			if ns.SetActionNode then ns.SetActionNode(current.node) end
+		end
+	elseif Cursor:IsShown() then
+		Cursor:Hide()
+		if ns.SetActionNode then ns.SetActionNode(nil) end
+	end
+end
+
 -- 当前节点消失（窗口被关掉）时回溯记忆栈，回到进入该窗口前的位置；没有则收起光标
 Cursor:SetScript('OnUpdate', function(self, elapsed)
 	self.Timer = (self.Timer or 0) + elapsed
 	if self.Timer < 0.1 then return end
 	self.Timer = 0
-	if current and not current.node:IsVisible() then
+	if not current then return end
+	if not current.node:IsVisible() then
 		local item = BacktrackItem()
 		if item then
 			self:MoveTo(item)
 		else
 			self:HideNode()
 		end
+	else
+		-- 节点还在，但可能被滚出滚动帧视口/被遮挡：按「是否还在可视区」显隐光标
+		SetCursorDrawn(Node:IsDrawn(current.node, current.super) and true or false)
 	end
 end)
