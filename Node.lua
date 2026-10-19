@@ -13,7 +13,7 @@ local KEY = { UP = 1, DOWN = 2, LEFT = 3, RIGHT = 4 }
 ns.KEY = KEY
 
 local vec2Dlen = function(x, y) return math.sqrt(x * x + y * y) end
-local abs, huge = math.abs, math.huge
+local abs, floor = math.abs, math.floor
 local tinsert, tremove, ipairs, next = table.insert, table.remove, ipairs, next
 
 local MAX_X, MAX_Y = UIParent:GetSize()
@@ -53,6 +53,8 @@ local Node = {
 	},
 	usable = { Button = true, CheckButton = true, EditBox = true, Slider = true },
 	cache = {}, rects = {}, scalar = 3, -- scalar: 轴向距离放大倍数（越大越「不斜跳」）
+	-- 扫描用的显式栈（复用，避免每次扫描新建；见 Node:Scan 注释）
+	_stackNode = {}, _stackSuper = {},
 }
 ns.Node = Node
 
@@ -62,8 +64,10 @@ end
 
 function Node:IsUsable(object) return self.usable[object] end
 
-function Node:IsInteractive(node, object)
-	return not node.includeChildren and IsMouseEnabled(node)
+-- mouseEnabled 可由调用方预先算好（Scan 里同一个节点要用到两次），不传则自己取
+function Node:IsInteractive(node, object, mouseEnabled)
+	if mouseEnabled == nil then mouseEnabled = IsMouseEnabled(node) end
+	return not node.includeChildren and mouseEnabled
 		and (self:IsUsable(object) or self:IsMouseEvent(node))
 end
 
@@ -97,31 +101,69 @@ function Node:GetSuperNode(super, node)
 	return node:IsObjectType('ScrollFrame') and node or super
 end
 
-function Node:Scan(super, node, sibling, ...)
-	if self:IsRelevant(node) then
-		local object, level = node:GetObjectType(), self:GetFrameLevel(node)
-		if self:IsDrawn(node, super) then
-			if self:IsInteractive(node, object) then
-				self:CacheItem(node, object, super, level)
-			elseif IsMouseEnabled(node) then
-				self:CacheRect(node, level)
+-- 把一批同级帧按逆序压入显式栈。这里的多值来自 GetChildren()，
+-- 本客户端 GetChildren() 直接返回多值，用 ... 接收再 select 逐个取出，
+-- 既不用为每个父帧新建一张子帧表，也不会把剩下的兄弟参数层层转发。
+local function PushNodes(nodes, supers, top, super, ...)
+	for i = select('#', ...), 1, -1 do
+		top = top + 1
+		nodes[top], supers[top] = select(i, ...), super
+	end
+	return top
+end
+
+-- 迭代式扫描（原来是「变长参数兄弟递归」）：
+-- 原写法把同级帧用 ... 逐层转发，同级 N 帧时总拷贝量约 N²/2；且两个递归都不是尾调用，
+-- 宽窗口（背包/法术书/成就）会把 Lua 栈顶到上千层，栈增长要一次性分配一大块内存。
+-- 改成显式栈后，栈只是 Node 上复用的一张普通表，深度只跟树的层数有关，也不再重复拷贝兄弟参数。
+function Node:Scan(roots)
+	local nodes, supers = self._stackNode, self._stackSuper
+	local top = 0
+	for i = #roots, 1, -1 do
+		top = top + 1
+		nodes[top], supers[top] = roots[i], nil
+	end
+	while top > 0 do
+		local node, super = nodes[top], supers[top]
+		nodes[top], supers[top] = nil, nil
+		top = top - 1
+		if self:IsRelevant(node) then
+			local object, level = node:GetObjectType(), self:GetFrameLevel(node)
+			local mouseEnabled = IsMouseEnabled(node)
+			if self:IsDrawn(node, super) then
+				if self:IsInteractive(node, object, mouseEnabled) then
+					self:CacheItem(node, object, super, level)
+				elseif mouseEnabled then
+					self:CacheRect(node, level)
+				end
+			end
+			if self:IsTree(node) then
+				top = PushNodes(nodes, supers, top, self:GetSuperNode(super, node), node:GetChildren())
 			end
 		end
-		if self:IsTree(node) then
-			self:Scan(self:GetSuperNode(super, node), node:GetChildren())
+	end
+end
+
+-- rects 按 level 降序排（RunScan 末尾统一排序）。ScrubCache 只需要看「level 比自己高」的 rect，
+-- 用二分找到分界点，避免每个节点都从头线性扫（原来还带一次逐层的 break 判断）。
+function Node:GetRectBound(level)
+	local rects, lo, hi = self.rects, 1, #self.rects
+	while lo <= hi do
+		local mid = floor((lo + hi) / 2)
+		if rects[mid].level > level then
+			lo = mid + 1
+		else
+			hi = mid - 1
 		end
 	end
-	if sibling then
-		self:Scan(super, sibling, ...)
-	end
+	return lo
 end
 
 function Node:ScrubCache(i, item)
 	while item do
 		local node, level = item.node, item.level
-		for _, rect in self:IterateRects() do
-			if not self:CanLevelsIntersect(level, rect.level) then break end
-			if self:DoNodeAndRectIntersect(node, rect) then
+		for index = 1, self:GetRectBound(level) - 1 do
+			if self:DoNodeAndRectIntersect(node, self.rects[index]) then
 				i = self:RemoveCacheItem(i)
 				break
 			end
@@ -130,21 +172,23 @@ function Node:ScrubCache(i, item)
 	end
 end
 
-function Node:RunScan(...)
-	self:Scan(nil, ...)
+local function SortRectsByLevel(a, b) return a.level > b.level end
+
+function Node:RunScan(roots)
+	self:Scan(roots)
+	-- rects 逐个有序插入是 O(n²)，改成尾部追加 + 扫描结束统一排序
+	table.sort(self.rects, SortRectsByLevel)
 	self:ScrubCache(self:GetNextCacheItem(nil))
 	return self.cache
 end
 
 function Node:CacheItem(node, object, super, level)
 	self:CacheRect(node, level)
-	tinsert(self.cache, node.hasPriority and 1 or #self.cache + 1, {
-		node = node, object = object, super = super, level = level,
-	})
+	tinsert(self.cache, { node = node, object = object, super = super, level = level })
 end
 
 function Node:CacheRect(node, level)
-	tinsert(self.rects, self:GetRectLevelIndex(level), { node = node, level = level })
+	tinsert(self.rects, { node = node, level = level })
 end
 
 function Node:RemoveCacheItem(cacheIndex)
@@ -163,22 +207,12 @@ function Node:GetFirstEligibleCacheItem()
 	end
 end
 
-function Node:GetRectLevelIndex(level)
-	for index, item in self:IterateRects() do
-		if item.level < level then return index end
-	end
-	return #self.rects + 1
-end
-
 function Node:IterateCache() return ipairs(self.cache) end
-function Node:IterateRects() return ipairs(self.rects) end
 
 function Node:GetDistance(x1, y1, x2, y2) return abs(x1 - x2), abs(y1 - y2) end
 function Node:GetDistanceSum(...) local x, y = self:GetDistance(...); return x + y end
 function Node:GetFrameLevel(node) return (self.level[node:GetFrameStrata()] or 0) + node:GetFrameLevel() end
-function Node:IsCloser(hz1, vt1, hz2, vt2) return vec2Dlen(hz1, vt1) < vec2Dlen(hz2, vt2) end
 function Node:PointInRange(pt, min, max) return pt and pt >= min and pt <= max end
-function Node:CanLevelsIntersect(l1, l2) return l1 < l2 end
 
 function Node:DoNodeAndRectIntersect(node, rect)
 	local x, y = node:GetCenter()
@@ -187,57 +221,50 @@ function Node:DoNodeAndRectIntersect(node, rect)
 		and self:PointInRange(y, r:GetBottom(), r:GetTop())
 end
 
-function Node:GetCandidateVectorForCurrent(cur)
-	local x, y = cur.node:GetCenter()
-	return { x = x, y = y, h = huge, v = huge }
-end
-
-function Node:GetCandidatesForVector(vector, comparator, candidates)
-	local thisX, thisY = vector.x, vector.y
+-- 方向选择：直接在缓存上遍历、只保留「当前最优」，不再为每个候选建 {x,y,h,v} 表
+-- （原来一次按键要分配 N 张小表 + 一张候选表，是高频 GC 的来源之一）。
+function Node:GetBestCandidate(cur, key, curNodeChanged)
+	local comparator = self.distance[key]
+	if not (cur and comparator) then return cur, curNodeChanged end
+	local thisX, thisY = cur.node:GetCenter()
+	local hMult = (key == KEY.UP or key == KEY.DOWN) and self.scalar or 1
+	local vMult = (key == KEY.LEFT or key == KEY.RIGHT) and self.scalar or 1
+	local bestDist
 	for _, destination in self:IterateCache() do
 		local candidate = destination.node
 		local destX, destY = candidate:GetCenter()
 		if destX and destY then
 			local distX, distY = self:GetDistance(thisX, thisY, destX, destY)
 			if comparator(destX, destY, distX, distY, thisX, thisY) then
-				candidates[destination] = { x = destX, y = destY, h = distX, v = distY }
+				local dist = vec2Dlen(distX * hMult, distY * vMult)
+				if not bestDist or dist < bestDist then
+					bestDist, cur, curNodeChanged = dist, candidate, true
+				end
 			end
 		end
 	end
-	return candidates
-end
-
-function Node:GetBestCandidate(cur, key, curNodeChanged)
-	if cur and self.distance[key] then
-		local this = self:GetCandidateVectorForCurrent(cur)
-		local candidates = self:GetCandidatesForVector(this, self.distance[key], {})
-		local hMult = (key == KEY.UP or key == KEY.DOWN) and self.scalar or 1
-		local vMult = (key == KEY.LEFT or key == KEY.RIGHT) and self.scalar or 1
-		for candidate, vector in pairs(candidates) do
-			if self:IsCloser(vector.h * hMult, vector.v * vMult, this.h, this.v) then
-				this = vector
-				this.h = this.h * hMult
-				this.v = this.v * vMult
-				cur = candidate
-				curNodeChanged = true
-			end
-		end
-		return cur, curNodeChanged
-	end
+	return cur, curNodeChanged
 end
 
 function Node:GetClosestCandidate(cur, key, curNodeChanged)
-	if cur and self.direction[key] then
-		local this = self:GetCandidateVectorForCurrent(cur)
-		local candidates = self:GetCandidatesForVector(this, self.direction[key], {})
-		for candidate, vector in pairs(candidates) do
-			if self:IsCloser(vector.h, vector.v, this.h, this.v) then
-				this = vector
-				cur = candidate
+	local comparator = self.direction[key]
+	if not (cur and comparator) then return cur, curNodeChanged end
+	local thisX, thisY = cur.node:GetCenter()
+	local bestDist
+	for _, destination in self:IterateCache() do
+		local candidate = destination.node
+		local destX, destY = candidate:GetCenter()
+		if destX and destY then
+			local distX, distY = self:GetDistance(thisX, thisY, destX, destY)
+			if comparator(destX, destY, distX, distY, thisX, thisY) then
+				local dist = vec2Dlen(distX, distY)
+				if not bestDist or dist < bestDist then
+					bestDist, cur = dist, candidate
+				end
 			end
 		end
-		return cur, curNodeChanged
 	end
+	return cur, curNodeChanged
 end
 
 function Node:GetArbitraryCandidate(cur, old, x, y)

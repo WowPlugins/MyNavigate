@@ -66,9 +66,28 @@ local EXCLUSIVE_FRAMES = {
 	'DropDownList1', 'DropDownList2', 'DropDownList3',
 }
 
+-- 按名字首字母给模式分桶（所有模式都以「^ + 字母」开头），
+-- 供 MatchesPanel 预筛，避免每次比对都遍历全部模式。
+local PATTERN_INDEX = {}
+for i = 1, #PANEL_PATTERNS do
+	local pattern = PANEL_PATTERNS[i]
+	local first = pattern:sub(2, 2):lower()
+	local bucket = PATTERN_INDEX[first]
+	if not bucket then
+		bucket = {}
+		PATTERN_INDEX[first] = bucket
+	end
+	bucket[#bucket + 1] = pattern
+end
+
 local function MatchesPanel(name)
-	for i = 1, #PANEL_PATTERNS do
-		if name:find(PANEL_PATTERNS[i]) then return true end
+	-- 82 条模式全部以「^ + 大写字母」开头，先按首字母分桶，
+	-- 遍历窗口时只比对同首字母的那几条，避免每次都跑满 82 次 find
+	local bucket = PATTERN_INDEX[name:sub(1, 1):lower()]
+	if bucket then
+		for i = 1, #bucket do
+			if name:find(bucket[i]) then return true end
+		end
 	end
 	local extra = MyNavigateDB and MyNavigateDB.extra
 	return (extra and extra[name]) and true or false
@@ -78,6 +97,18 @@ function ns.IsNavigableRoot(frame)
 	local name = frame.GetName and frame:GetName()
 	if not name then return false end
 	return MatchesPanel(name)
+end
+
+-- 把 UIParent:GetChildren() 返回的一串子帧里符合条件的收进 roots。
+-- 本客户端的 GetChildren() 直接返回多值，用 ... 接收即可，
+-- 不必每 0.2s 新建一张 `{ ... }` 包装表（这是常驻的内存分配来源之一）。
+local function AddRoots(roots, ...)
+	for i = 1, select('#', ...) do
+		local frame = select(i, ...)
+		if frame:IsVisible() and ns.IsNavigableRoot(frame) then
+			roots[#roots + 1] = frame
+		end
+	end
 end
 
 function ns.GetRootFrames()
@@ -91,11 +122,7 @@ function ns.GetRootFrames()
 		end
 		if #roots > 0 then return roots end
 	end
-	for _, frame in ipairs({ UIParent:GetChildren() }) do
-		if frame:IsVisible() and ns.IsNavigableRoot(frame) then
-			roots[#roots + 1] = frame
-		end
-	end
+	AddRoots(roots, UIParent:GetChildren())
 	return roots
 end
 

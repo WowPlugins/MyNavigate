@@ -8,7 +8,7 @@
 ---------------------------------------------------------------------
 local ADDON, ns = ...
 local KEY, Node = ns.KEY, ns.Node
-local abs, unpack, next, pairs, pcall = math.abs, unpack, next, pairs, pcall
+local abs, next, pairs, pcall = math.abs, next, pairs, pcall
 local tremove = table.remove
 local NL = string.char(10)   -- 提示框每行之间的换行符
 
@@ -67,6 +67,9 @@ ns.ACTION_MAP = ACTION_MAP
 local Scroll = CreateFrame('Frame')
 local ScrollActive = {}
 local current, lastNode
+-- 滚动帧滚动过 → 视口内容变了，下次方向键需要重扫才能看到新滚进来的节点
+-- （否则只能停留在第一次扫描时可见的那批节点上）
+local scrollDirty = false
 
 local function Debug(...)
 	if MyNavigateDB and MyNavigateDB.debug then
@@ -122,6 +125,7 @@ function Scroll:To(node, super)
 		local newVert = currVert + (scrollY - nodeY)
 		ScrollActive[super] = { vert = newVert < 0 and 0 or newVert > maxVert and maxVert or newVert }
 		Scroll:SetScript('OnUpdate', Scroll.Offset)
+		scrollDirty = true
 	end
 end
 
@@ -276,17 +280,21 @@ end
 function Cursor:Refresh()
 	local roots = ns.GetRootFrames()
 	Node:ClearCache()
-	Node:RunScan(unpack(roots))
+	Node:RunScan(roots)
+	scrollDirty = false
 	-- 当前节点所在窗口被关掉时，先回溯记忆栈，回到进入该窗口前的位置
 	local seed = current
 	if seed and not (Node:IsRelevant(seed.node) and Node:IsDrawn(seed.node, seed.super)) then
 		seed = BacktrackItem() or seed
 	end
 	local nextItem = Node:GetArbitraryCandidate(seed, seed, self:GetCenter())
-	local names = {}
-	for i = 1, #roots do names[i] = roots[i]:GetName() or '?' end
-	Debug('面板', #roots, '['..table.concat(names, ',')..']', '节点', #Node.cache, '当前',
-		nextItem and (nextItem.node:GetName() or nextItem.object) or 'nil')
+	-- 调试输出：只在开启调试时才拼字符串（否则每次扫描都白拼一份名字表）
+	if MyNavigateDB and MyNavigateDB.debug then
+		local names = {}
+		for i = 1, #roots do names[i] = roots[i]:GetName() or '?' end
+		Debug('面板', #roots, '['..table.concat(names, ',')..']', '节点', #Node.cache, '当前',
+			nextItem and (nextItem.node:GetName() or nextItem.object) or 'nil')
+	end
 	-- 只有「已启用」且真正存在可导航节点时才处于导航模式；面板全关或没有可用节点时清除覆盖，
 	-- 1~8 自动回到各自的原始绑定（动作条等）
 	local enabled = not (MyNavigateDB and MyNavigateDB.enabled == false)
@@ -299,9 +307,15 @@ function Cursor:Refresh()
 	end
 end
 
--- 方向键入口：刷新后按方向选最优候选；没有合适的就退化为「同方向上最近的节点」
+-- 方向键入口：缓存仍有效时直接复用，避免每次按键全量重扫。
+-- 窗口开关引起的刷新已由 Core.lua 的 watcher（每 0.2s）负责；这里只在
+-- 「当前节点已失效」或「滚动帧刚滚动过（视口内容变了）」时才重扫。
 function Cursor:UIControl(key, state)
-	self:Refresh()
+	local valid = current and not scrollDirty
+		and Node:IsRelevant(current.node) and Node:IsDrawn(current.node, current.super)
+	if not valid then
+		self:Refresh()
+	end
 	if state == KEY.STATE_DOWN and current then
 		local changed
 		local nextItem
