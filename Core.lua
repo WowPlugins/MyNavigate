@@ -295,6 +295,11 @@ function MyNavigate:OnAction(name)
 	ns.Cursor:Action(name)
 end
 
+-- 滚动绑定入口（-1 上翻 / 1 下翻），窗口打开、导航生效时才会被触发
+function MyNavigate:OnScroll(delta)
+	ns.Cursor:Scroll(delta)
+end
+
 ---------------------------------------------------------------------
 -- 手柄按键映射（参考 ConsolePortLK：用「覆盖绑定」重定向同一个物理键）
 ---------------------------------------------------------------------
@@ -310,13 +315,15 @@ end
 --       只要窗口是在非战斗时打开/关闭（最常见情形），战斗内外都能正确工作。
 ---------------------------------------------------------------------
 -- 物理键 → 绑定名：默认方向 5/6/7/8，动作 X/B/Y/A 分别对应 1/2/3/4。
+-- 滚动键不属于手柄那 8 个物理键，默认用键盘 PageUp / PageDown。
 -- 这些键都可以在设置面板里改，改后的值存在 MyNavigateDB.keys 里。
 local DEFAULT_KEYS = {
 	UP = '5', DOWN = '6', LEFT = '7', RIGHT = '8',
 	X = '1', B = '2', Y = '3', A = '4',
+	SCROLLUP = 'PAGEUP', SCROLLDOWN = 'PAGEDOWN',
 }
 ns.DEFAULT_KEYS = DEFAULT_KEYS
-ns.KEY_ACTIONS = { 'UP', 'DOWN', 'LEFT', 'RIGHT', 'A', 'B', 'X', 'Y' }
+ns.KEY_ACTIONS = { 'UP', 'DOWN', 'LEFT', 'RIGHT', 'A', 'B', 'X', 'Y', 'SCROLLUP', 'SCROLLDOWN' }
 
 -- 读取某个动作当前绑定的物理键（未设置过则用默认值）
 function ns.GetKey(action)
@@ -378,8 +385,8 @@ end
 local function ApplyOverride(on)
 	ClearOverrideBindings(bindOwner)
 	if on then
-		-- 方向键：普通命令绑定，走 Cursor:UIControl 的移动逻辑
-		for _, action in ipairs({ 'UP', 'DOWN', 'LEFT', 'RIGHT' }) do
+		-- 方向键 / 滚动键：普通命令绑定，走 Cursor 的移动与滚动逻辑
+		for _, action in ipairs({ 'UP', 'DOWN', 'LEFT', 'RIGHT', 'SCROLLUP', 'SCROLLDOWN' }) do
 			local key = ns.GetKey(action)
 			if key then SetOverrideBinding(bindOwner, true, key, 'MYNAV_' .. action) end
 		end
@@ -449,11 +456,14 @@ end)
 local LABELS = {
 	UP = '上', DOWN = '下', LEFT = '左', RIGHT = '右',
 	A = 'A (左键)', B = 'B (右键)', X = 'X (左键)', Y = 'Y (特殊)',
+	SCROLLUP = '上翻', SCROLLDOWN = '下翻',
 }
 _G['BINDING_HEADER_MYNAV'] = 'MyNavigate 导航'
 _G['BINDING_HEADER_MYNAVACT'] = 'MyNavigate 动作'
+_G['BINDING_HEADER_MYNAVSCROLL'] = 'MyNavigate 滚动'
 for name in pairs({ MYNAV_UP = 1, MYNAV_DOWN = 1, MYNAV_LEFT = 1, MYNAV_RIGHT = 1,
-	MYNAV_A = 1, MYNAV_B = 1, MYNAV_X = 1, MYNAV_Y = 1 }) do
+	MYNAV_A = 1, MYNAV_B = 1, MYNAV_X = 1, MYNAV_Y = 1,
+	MYNAV_SCROLLUP = 1, MYNAV_SCROLLDOWN = 1 }) do
 	_G['BINDING_NAME_'..name] = LABELS[name:sub(7)] or name
 end
 

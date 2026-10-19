@@ -129,6 +129,32 @@ function Scroll:To(node, super)
 	end
 end
 
+-- 上翻 / 下翻：默认 PageUp / PageDown（设置面板可改），只在窗口打开、导航生效时触发。
+-- 优先滚「当前节点所在的滚动帧」，没有就退回缓存里任意一个可滚动的帧；
+-- 滚动会改变视口内容，置 scrollDirty 让下一次方向键重扫，才能看到新滚进来的行。
+local SCROLL_STEP = 40   -- 一次按键滚动的像素
+function Cursor:Scroll(delta)
+	local target = current and current.super
+	if not (target and target.GetVerticalScroll and target:GetVerticalScrollRange() > 0) then
+		target = nil
+		for _, item in Node:IterateCache() do
+			local super = item.super
+			if super and super.GetVerticalScroll and super:GetVerticalScrollRange() > 0 then
+				target = super
+				break
+			end
+		end
+	end
+	if not target then return end
+	local maxVert = target:GetVerticalScrollRange()
+	local newVert = target:GetVerticalScroll() + delta * SCROLL_STEP
+	if newVert < 0 then newVert = 0 elseif newVert > maxVert then newVert = maxVert end
+	-- 复用 ScrollActive 的缓动，滚动更顺滑（与导航到视口外节点时的滚动一致）
+	ScrollActive[target] = { vert = newVert }
+	Scroll:SetScript('OnUpdate', Scroll.Offset)
+	scrollDirty = true
+end
+
 -- 提示框里每个动作键一行的颜色（沿用 SimpleCursor 的彩色提示风格）
 local ACTION_COLOR = {
 	A = '|cFFFFFF00',  -- 金黄

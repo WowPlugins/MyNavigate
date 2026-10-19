@@ -9,4 +9,7 @@
 	<Binding name="MYNAV_B" category="MyNavigate">MyNavigate:OnAction("B")</Binding>
 	<Binding name="MYNAV_X" category="MyNavigate">MyNavigate:OnAction("X")</Binding>
 	<Binding name="MYNAV_Y" category="MyNavigate">MyNavigate:OnAction("Y")</Binding>
+	<!-- 滚动类：对应 BINDING_HEADER_MYNAVSCROLL，默认 PageUp / PageDown -->
+	<Binding name="MYNAV_SCROLLUP" category="MyNavigate" header="MYNAVSCROLL">MyNavigate:OnScroll(-1)</Binding>
+	<Binding name="MYNAV_SCROLLDOWN" category="MyNavigate">MyNavigate:OnScroll(1)</Binding>
 </Bindings>

@@ -175,10 +175,27 @@ local kbY = CreateKeyButton(content, 'Y', 'Y (特殊):')
 kbY:SetPoint('TOPLEFT', kbX, 'BOTTOMLEFT', 0, -2)
 
 ---------------------------------------------------------------------
+-- 滚动键：窗口内长列表翻页，默认 PageUp / PageDown
+---------------------------------------------------------------------
+local scrollTitle = content:CreateFontString(nil, 'ARTWORK', 'GameFontNormalLarge')
+scrollTitle:SetPoint('TOPLEFT', kbRight, 'BOTTOMLEFT', 0, -20)
+scrollTitle:SetText('滚动按键')
+
+local scrollHint = content:CreateFontString(nil, 'ARTWORK', 'GameFontHighlight')
+scrollHint:SetPoint('TOPLEFT', scrollTitle, 'BOTTOMLEFT', 0, -8)
+scrollHint:SetJustifyH('LEFT')
+scrollHint:SetText('窗口打开时用它翻动长列表（默认 PageUp / PageDown，可改）。')
+
+local kbScrollUp = CreateKeyButton(content, 'SCROLLUP', '上翻:')
+kbScrollUp:SetPoint('TOPLEFT', scrollHint, 'BOTTOMLEFT', 0, -10)
+local kbScrollDown = CreateKeyButton(content, 'SCROLLDOWN', '下翻:')
+kbScrollDown:SetPoint('TOPLEFT', kbScrollUp, 'TOPRIGHT', 24, 0)
+
+---------------------------------------------------------------------
 -- 自定义白名单
 ---------------------------------------------------------------------
 local listTitle = content:CreateFontString(nil, 'ARTWORK', 'GameFontNormalLarge')
-listTitle:SetPoint('TOPLEFT', kbRight, 'BOTTOMLEFT', 0, -24)
+listTitle:SetPoint('TOPLEFT', kbScrollUp, 'BOTTOMLEFT', 0, -24)
 listTitle:SetText('导航白名单')
 
 local listHint = content:CreateFontString(nil, 'ARTWORK', 'GameFontHighlight')
