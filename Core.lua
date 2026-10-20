@@ -261,15 +261,25 @@ local pendingTries = 0     -- 等待拍数上限，防止界面一直变化时�
 -- 立刻按关闭处理会先落到旧位置，等新窗口出现再落一次（连跳两次）。
 local closePending = false
 local closeSince = 0
+-- 检查间隔：平时固定 0.2s 会让「打开窗口」最多晚 0.2~0.4s 才出现金框；
+-- 改成自适应 —— 没窗口 / 等新窗口建完 0.05s，已有窗口稳定显示 0.1s，
+-- 既把落点延迟压到 0.1s 左右，也不会在无变化时高频全量扫描。
+local watchInterval = 0.05
+-- 按当前状态决定下一拍的检查间隔：
+-- 没窗口 / 正在等新窗口建完 → 0.05s（落点最要紧）；已有窗口稳定显示 → 0.1s
+local function UpdateWatchInterval()
+	watchInterval = (pendingRoot or next(shown) == nil) and 0.05 or 0.1
+end
 watcher:SetScript('OnUpdate', function(_, elapsed)
 	watchTimer = watchTimer + elapsed
-	if watchTimer < 0.2 then return end
+	if watchTimer < watchInterval then return end
 	watchTimer = 0
 	if MyNavigateDB and MyNavigateDB.enabled == false then
 		pendingRoot = nil
 		closePending = false
 		ns.navActive = false
 		if ns.SetGamepadOverride then ns.SetGamepadOverride(false) end
+		watchInterval = 0.2   -- 禁用时不用快速轮询，省点开销
 		return
 	end
 	local roots, cur, opened = ns.GetRootFrames(), {}, nil
@@ -323,6 +333,7 @@ watcher:SetScript('OnUpdate', function(_, elapsed)
 			pendingCount = ns.Cursor:ScanOnly()
 			pendingTries = 0
 		end
+		UpdateWatchInterval()
 		return
 	end
 	if changed then
@@ -330,6 +341,7 @@ watcher:SetScript('OnUpdate', function(_, elapsed)
 			-- 玩家可能已经抢在自动落点之前自己导航进这个窗口了：那就别再搬一次
 			if ns.Cursor.IsCurrentInRoot and ns.Cursor:IsCurrentInRoot(opened) then
 				closePending = false
+				UpdateWatchInterval()
 				return
 			end
 			closePending = false
@@ -344,6 +356,7 @@ watcher:SetScript('OnUpdate', function(_, elapsed)
 			closePending = true
 			closeSince = GetTime()
 		end
+		UpdateWatchInterval()
 		return
 	end
 	if closePending then
@@ -352,6 +365,7 @@ watcher:SetScript('OnUpdate', function(_, elapsed)
 		local moved = ns.Cursor.GetLastMoveTime and ns.Cursor:GetLastMoveTime() > closeSince
 		if not moved then ns.Cursor:Refresh() end
 	end
+	UpdateWatchInterval()
 end)
 
 -- 导航绑定入口（仅在覆盖绑定生效、即存在可导航窗口时会被触发）
