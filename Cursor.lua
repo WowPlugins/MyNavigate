@@ -457,14 +457,15 @@ Cursor:SetScript('OnUpdate', function(self, elapsed)
 	self.Timer = 0
 	if not current then return end
 	if not current.node:IsVisible() then
-		-- 临时诊断：节点自身变隐藏（如 faux 滚动列表把滚出范围的行 Hide 掉）走这条路径
+		-- 当前节点被外部 UI 藏掉了（如界面设置的分类按钮在首次打开/切分类时被重排隐藏）。
+		-- 先回溯记忆栈；没有可回溯的就重新扫描，落到一个仍然可见的节点上。
+		-- 不要直接收起：current 一旦清空，OnUpdate 就再也不会跑，光标会凭空消失，
+		-- 必须等玩家按一次动作键（Action 里重新 Refresh）才回来。
 		local item = BacktrackItem()
-		Debug('节点已不可见', current.node:GetName() or current.node:GetObjectType(),
-			item and ('回溯->'..(item.node:GetName() or item.node:GetObjectType())) or '无回溯')
 		if item then
 			self:MoveTo(item)
 		else
-			self:HideNode()
+			self:Refresh()
 		end
 	else
 		-- 节点还在，但可能被滚出滚动帧视口/被遮挡：按「是否还在可视区」显隐光标
