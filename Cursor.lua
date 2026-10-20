@@ -67,6 +67,9 @@ ns.ACTION_MAP = ACTION_MAP
 local Scroll = CreateFrame('Frame')
 local ScrollActive = {}
 local current, lastNode
+-- 最近一次落地的时间：刚落地时节点的 IsVisible 常有瞬时抖动（滚动帧重排 / 外部 UI
+-- 换布局），OnUpdate 要据此放一拍再判定，否则会误触发重扫、把光标挪到别的节点上
+local lastSetTime = 0
 -- 滚动帧滚动过 → 视口内容变了，下次方向键需要重扫才能看到新滚进来的节点
 -- （否则只能停留在第一次扫描时可见的那批节点上）
 local scrollDirty = false
@@ -250,13 +253,12 @@ function Cursor:SetNode(node, object, super)
 	end
 	self:SetPosition(node)
 	if super then Scroll:To(node, super) end
+	lastSetTime = GetTime()
 	-- 把动作键重绑成「安全点击该节点」，由暴雪安全框架执行点击
 	if ns.SetActionNode then ns.SetActionNode(node) end
 end
 
 function Cursor:HideNode()
-	-- 临时诊断：不管从哪条路径收起，都会在这里留下记录
-	Debug('收起光标(HideNode)', lastNode and (lastNode:GetName() or lastNode:GetObjectType()) or 'nil')
 	RunScript(lastNode, 'OnLeave')
 	lastNode, current = nil, nil
 	HintBox:Hide()
@@ -339,13 +341,20 @@ end
 -- 窗口开关引起的刷新已由 Core.lua 的 watcher（每 0.2s）负责；这里只在
 -- 「当前节点已失效」或「滚动帧刚滚动过（视口内容变了）」时才重扫。
 function Cursor:UIControl(key, state)
-	local valid = current and not scrollDirty
-		and Node:IsRelevant(current.node) and Node:IsDrawn(current.node, current.super)
-	-- 临时诊断：看方向键是复用缓存还是触发了全量重扫
-	Debug('方向键', key, 'valid', valid and true or false,
-		'scrollDirty', scrollDirty and true or false,
-		'当前', current and (current.node:GetName() or current.object) or 'nil')
-	if not valid then
+	local node = current and current.node
+	local usable = node and Node:IsRelevant(node) and Node:IsDrawn(node, current.super)
+	-- 滚动帧刚滚过视口：只需要重建缓存（让新滚进来的行成为候选），不要顺手移动光标。
+	-- 否则一次按键会连搬两次：Refresh 自己搬一次，下面选方向又搬一次，
+	-- 画面上就是「先跳到 A、紧接着又跳到 B」。
+	if usable and scrollDirty then
+		Node:ClearCache()
+		Node:RunScan(ns.GetRootFrames())
+		scrollDirty = false
+		usable = #Node.cache > 0
+			and Node:IsRelevant(node) and Node:IsDrawn(node, current.super)
+	end
+	-- 当前节点真的失效（窗口关了 / 被藏 / 滚出视口）时才走完整刷新
+	if not usable then
 		self:Refresh()
 	end
 	if state == KEY.STATE_DOWN and current then
@@ -437,14 +446,6 @@ local function SetCursorDrawn(drawn)
 			if ns.SetActionNode then ns.SetActionNode(current.node) end
 		end
 	elseif Cursor:IsShown() then
-		-- 临时诊断：确认收起金框是不是 IsDrawn 误判（节点的 super 是不是滚动帧、两者矩形是否相交）
-		local node, super = current.node, current.super
-		Debug('收起金框', node:GetName() or node:GetObjectType(),
-			'super', super and (super:GetName() or super:GetObjectType()) or 'nil',
-			'center', node:GetCenter(),
-			'nRect', node:GetLeft(), node:GetBottom(), node:GetWidth(), node:GetHeight(),
-			'sRect', super and super:GetLeft(), super and super:GetBottom(),
-			super and super:GetWidth(), super and super:GetHeight())
 		Cursor:Hide()
 		if ns.SetActionNode then ns.SetActionNode(nil) end
 	end
@@ -457,8 +458,11 @@ Cursor:SetScript('OnUpdate', function(self, elapsed)
 	self.Timer = 0
 	if not current then return end
 	if not current.node:IsVisible() then
-		-- 当前节点被外部 UI 藏掉了（如界面设置的分类按钮在首次打开/切分类时被重排隐藏）。
-		-- 先回溯记忆栈；没有可回溯的就重新扫描，落到一个仍然可见的节点上。
+		-- 刚落地时节点的 IsVisible 常有瞬时抖动（滚动帧重排、外部 UI 换布局），
+		-- 这种抖动下一拍就恢复。先放一拍再看，否则会误触发下面的重扫，
+		-- 把光标挪到别的节点上（表现为「刚过到右边，立即又跳到另一个位置」）。
+		if GetTime() - lastSetTime < 0.3 then return end
+		-- 确实不见了：先回溯记忆栈；没有可回溯的就重新扫描，落到一个仍然可见的节点上。
 		-- 不要直接收起：current 一旦清空，OnUpdate 就再也不会跑，光标会凭空消失，
 		-- 必须等玩家按一次动作键（Action 里重新 Refresh）才回来。
 		local item = BacktrackItem()
