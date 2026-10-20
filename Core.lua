@@ -261,14 +261,13 @@ local pendingTries = 0     -- 等待拍数上限，防止界面一直变化时�
 -- 立刻按关闭处理会先落到旧位置，等新窗口出现再落一次（连跳两次）。
 local closePending = false
 local closeSince = 0
--- 检查间隔：平时固定 0.2s 会让「打开窗口」最多晚 0.2~0.4s 才出现金框；
--- 改成自适应 —— 没窗口 / 等新窗口建完 0.05s，已有窗口稳定显示 0.1s，
--- 既把落点延迟压到 0.1s 左右，也不会在无变化时高频全量扫描。
-local watchInterval = 0.05
--- 按当前状态决定下一拍的检查间隔：
--- 没窗口 / 正在等新窗口建完 → 0.05s（落点最要紧）；已有窗口稳定显示 → 0.1s
+-- 检查间隔：只有「正在等新窗口建完」才用 0.05s 抢时间；
+-- 其余时候（有窗口 / 没窗口）都是 0.1s —— 玩家跑图打怪时占绝大多数时间，
+-- 那里没必要每秒扫 20 次白名单。
+local watchInterval = 0.1
+-- 按当前状态决定下一拍的检查间隔
 local function UpdateWatchInterval()
-	watchInterval = (pendingRoot or next(shown) == nil) and 0.05 or 0.1
+	watchInterval = pendingRoot and 0.05 or 0.1
 end
 watcher:SetScript('OnUpdate', function(_, elapsed)
 	watchTimer = watchTimer + elapsed
@@ -313,8 +312,9 @@ watcher:SetScript('OnUpdate', function(_, elapsed)
 			-- 只看不落：节点数这一拍和上一拍一致，说明窗口里的控件已经建完、布局稳定，
 			-- 这时再正式落点，就不会先落在一个马上被隐藏的占位控件上（避免「先落一处、
 			-- 零点几秒后又跳到另一处」）。一直不稳定时最多等 5 拍。
+			-- 只扫这个新窗口就够（不传 root 会扫全部白名单窗口，纯属浪费）
 			pendingTries = pendingTries + 1
-			local count = ns.Cursor:ScanOnly()
+			local count = ns.Cursor:ScanOnly(root)
 			if count == pendingCount or pendingTries > 5 then
 				pendingRoot = nil
 				if root:IsVisible() and ns.IsNavigableRoot(root) then
@@ -330,7 +330,7 @@ watcher:SetScript('OnUpdate', function(_, elapsed)
 		if opened and opened ~= root and not pendingRoot then
 			pendingRoot = opened
 			pendingSince = GetTime()
-			pendingCount = ns.Cursor:ScanOnly()
+			pendingCount = ns.Cursor:ScanOnly(opened)
 			pendingTries = 0
 		end
 		UpdateWatchInterval()
@@ -348,7 +348,7 @@ watcher:SetScript('OnUpdate', function(_, elapsed)
 			pendingRoot = opened
 			pendingSince = GetTime()
 			pendingTries = 0
-			pendingCount = ns.Cursor:ScanOnly()
+			pendingCount = ns.Cursor:ScanOnly(opened)
 			-- 等待期间别让 OnUpdate 自动纠偏，否则会多挪一次
 			if ns.Cursor.HoldAutoCorrect then ns.Cursor:HoldAutoCorrect() end
 		else

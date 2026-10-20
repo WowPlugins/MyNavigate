@@ -67,6 +67,8 @@ ns.ACTION_MAP = ACTION_MAP
 local Scroll = CreateFrame('Frame')
 local ScrollActive = {}
 local current, lastNode
+-- 复用的「单窗口根帧表」：按键时只重扫当前窗口，避免每次新建一张小表
+local singleRoot = {}
 -- 最近一次落地的时间：刚落地时节点的 IsVisible 常有瞬时抖动（滚动帧重排 / 外部 UI
 -- 换布局），OnUpdate 要据此放一拍再判定，否则会误触发重扫、把光标挪到别的节点上
 local lastSetTime = 0
@@ -337,9 +339,14 @@ end
 
 -- 只重建缓存、不移动光标；返回可导航节点数。
 -- 新窗口刚打开时它的控件还在陆续创建，Core 用一个稳定的节点数判断「已经建完了」。
-function Cursor:ScanOnly()
+function Cursor:ScanOnly(root)
 	Node:ClearCache()
-	Node:RunScan(ns.GetRootFrames())
+	if root then
+		singleRoot[1] = root
+		Node:RunScan(singleRoot)
+	else
+		Node:RunScan(ns.GetRootFrames())
+	end
 	return #Node.cache
 end
 
@@ -395,13 +402,31 @@ end
 -- 画面上就是「刚过到右边，立即又跳到另一个位置」。
 -- 扫描本身已改为迭代式、不再转发变长参数（见 Node:Scan），单次开销可控。
 function Cursor:UIControl(key, state)
-	Node:ClearCache()
-	Node:RunScan(ns.GetRootFrames())
-
 	local node = current and current.node
+	local root = node and TopParent(node)
+	-- 每次按键都要重建缓存（理由见上），但优先只重扫「当前节点所在的窗口」：
+	-- 背包 + 银行 / 多个面板同开时，全量扫描会把它们的节点全部走一遍，
+	-- 按键瞬间的开销随窗口数成倍增长，而这一步绝大多数时候只在当前窗口内挑下一个节点。
+	-- 窗口已关（root 不可见）时才直接走全量扫描。
+	local scannedAll = false
+	if root and root:IsVisible() then
+		singleRoot[1] = root
+		Node:ClearCache()
+		Node:RunScan(singleRoot)
+	else
+		Node:ClearCache()
+		Node:RunScan(ns.GetRootFrames())
+		scannedAll = true
+	end
+
 	if not (node and Node:IsRelevant(node)) then
 		-- 当前节点真的没了（窗口关了 / 面板整个换掉）：落到最近的有效节点，
 		-- 这一拍不再做方向移动，避免一次按键连搬两次
+		if not scannedAll then
+			-- 上面只扫了当前窗口，可能已经切到别的窗口：补一次全量扫描
+			Node:ClearCache()
+			Node:RunScan(ns.GetRootFrames())
+		end
 		local seed = current
 		if seed and not Node:IsRelevant(seed.node) then seed = BacktrackItem() or seed end
 		self:MoveTo(Node:GetArbitraryCandidate(seed, seed, self:GetCenter()))
