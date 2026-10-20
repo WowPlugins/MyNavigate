@@ -339,6 +339,10 @@ end
 function Cursor:UIControl(key, state)
 	local valid = current and not scrollDirty
 		and Node:IsRelevant(current.node) and Node:IsDrawn(current.node, current.super)
+	-- 临时诊断：看方向键是复用缓存还是触发了全量重扫
+	Debug('方向键', key, 'valid', valid and true or false,
+		'scrollDirty', scrollDirty and true or false,
+		'当前', current and (current.node:GetName() or current.object) or 'nil')
 	if not valid then
 		self:Refresh()
 	end
@@ -431,6 +435,14 @@ local function SetCursorDrawn(drawn)
 			if ns.SetActionNode then ns.SetActionNode(current.node) end
 		end
 	elseif Cursor:IsShown() then
+		-- 临时诊断：确认收起金框是不是 IsDrawn 误判（节点的 super 是不是滚动帧、两者矩形是否相交）
+		local node, super = current.node, current.super
+		Debug('收起金框', node:GetName() or node:GetObjectType(),
+			'super', super and (super:GetName() or super:GetObjectType()) or 'nil',
+			'center', node:GetCenter(),
+			'nRect', node:GetLeft(), node:GetBottom(), node:GetWidth(), node:GetHeight(),
+			'sRect', super and super:GetLeft(), super and super:GetBottom(),
+			super and super:GetWidth(), super and super:GetHeight())
 		Cursor:Hide()
 		if ns.SetActionNode then ns.SetActionNode(nil) end
 	end
