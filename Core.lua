@@ -250,11 +250,17 @@ end
 -- 打开窗口 → 光标直接落到该窗口的第一个节点；关闭窗口 → 自动收起或切到剩下的窗口。
 local watcher = CreateFrame('Frame')
 local watchTimer, shown = 0, {}
+-- 刚打开的窗口：等它的控件建好、布局稳定之后再落点。
+-- 刚 Show 的窗口（尤其界面设置的二级面板）这一拍往往还在创建/重排，
+-- 立刻落点会先落到一个马上被隐藏的占位控件上，下一拍再被纠正 —— 看起来就是连跳两次。
+local pendingRoot
+local pendingSince = 0
 watcher:SetScript('OnUpdate', function(_, elapsed)
 	watchTimer = watchTimer + elapsed
 	if watchTimer < 0.2 then return end
 	watchTimer = 0
 	if MyNavigateDB and MyNavigateDB.enabled == false then
+		pendingRoot = nil
 		ns.navActive = false
 		if ns.SetGamepadOverride then ns.SetGamepadOverride(false) end
 		return
@@ -279,9 +285,36 @@ watcher:SetScript('OnUpdate', function(_, elapsed)
 	end
 	shown = cur
 	-- 手柄按键的接管由 Cursor:Refresh 依据「是否真有可导航节点」决定
+	if pendingRoot then
+		local root = pendingRoot
+		pendingRoot = nil
+		-- 这 0.2s 内玩家已经自己按方向键搬过光标（UIControl 会直接落点）：
+		-- 放弃这次自动落点，否则会再挪一次，变成连跳
+		local moved = ns.Cursor.GetLastMoveTime and ns.Cursor:GetLastMoveTime() > pendingSince
+		if not moved then
+			if root:IsVisible() and ns.IsNavigableRoot(root) then
+				-- 这一拍再扫描并直接落到它里面（Refresh 只移动一次）
+				ns.Cursor:Refresh(root)
+			else
+				ns.Cursor:Refresh()
+			end
+		end
+		-- 同一拍里又有别的窗口新开，留到下一拍处理（shown 已更新，不会再被识别为 opened）
+		if opened and opened ~= root then
+			pendingRoot = opened
+			pendingSince = GetTime()
+		end
+		return
+	end
 	if changed then
-		ns.Cursor:Refresh()
-		if opened then ns.Cursor:SelectRoot(opened) end
+		if opened then
+			pendingRoot = opened
+			pendingSince = GetTime()
+			-- 这 0.2s 内别让 OnUpdate 自动纠偏，否则会多挪一次
+			if ns.Cursor.HoldAutoCorrect then ns.Cursor:HoldAutoCorrect() end
+		else
+			ns.Cursor:Refresh()
+		end
 	end
 end)
 

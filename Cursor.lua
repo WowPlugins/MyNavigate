@@ -70,6 +70,9 @@ local current, lastNode
 -- 最近一次落地的时间：刚落地时节点的 IsVisible 常有瞬时抖动（滚动帧重排 / 外部 UI
 -- 换布局），OnUpdate 要据此放一拍再判定，否则会误触发重扫、把光标挪到别的节点上
 local lastSetTime = 0
+-- 最近一次真正移动光标的时间。与 lastSetTime 分开：lastSetTime 还会被
+-- HoldAutoCorrect 主动刷新，这里只记录真实落点，用于判断「用户已经自己动过了」。
+local lastMoveTime = 0
 
 local function Debug(...)
 	if MyNavigateDB and MyNavigateDB.debug then
@@ -287,6 +290,10 @@ end
 
 -- 统一入口：切换当前节点。跨顶层窗口时自动记忆上一个位置
 function Cursor:MoveTo(item)
+	if MyNavigateDB and MyNavigateDB.debug then
+		Debug('落点', item and (item.node:GetName() or item.object) or 'nil', GetTime())
+	end
+	lastMoveTime = GetTime()
 	local prev = current
 	if prev and prev.node and prev.node:IsVisible() and item and item.node
 		and prev.node ~= item.node and TopParent(prev.node) ~= TopParent(item.node) then
@@ -300,8 +307,10 @@ function Cursor:MoveTo(item)
 	end
 end
 
--- 重新扫描所有白名单窗口，并重算当前节点
-function Cursor:Refresh()
+-- 重新扫描所有白名单窗口，并重算当前节点。
+-- selectRoot：刚打开的窗口。传入时直接落到它里面，并且只移动一次
+--（否则 Refresh 先搬一次、SelectRoot 又搬一次，调用方看起来就是连跳）。
+function Cursor:Refresh(selectRoot)
 	local roots = ns.GetRootFrames()
 	Node:ClearCache()
 	Node:RunScan(roots)
@@ -324,7 +333,11 @@ function Cursor:Refresh()
 	ns.navActive = enabled and (#Node.cache > 0)
 	if ns.SetGamepadOverride then ns.SetGamepadOverride(ns.navActive) end
 	if enabled then
-		self:MoveTo(nextItem)
+		-- 新窗口打开时直接落到它里面（SelectRoot 内部会 MoveTo）；
+		-- 它里面一个可导航节点都没有时，再退回常规落点
+		if not (selectRoot and self:SelectRoot(selectRoot)) then
+			self:MoveTo(nextItem)
+		end
 	else
 		self:HideNode()
 	end
@@ -390,6 +403,12 @@ function Cursor:Action(name)
 end
 
 function Cursor:GetCurrentNode() return current and current.node end
+
+-- 外部即将重新落点（如新窗口打开、需要等它建好再落）时调用：
+-- 把「刚落地」的时间刷新一下，让 OnUpdate 在这段宽限期内不要自动纠偏，
+-- 否则它会先把光标挪一次、落点逻辑再挪一次，看起来就是连跳。
+function Cursor:HoldAutoCorrect() lastSetTime = GetTime() end
+function Cursor:GetLastMoveTime() return lastMoveTime end
 
 -- 判断节点是否属于某个根窗口（沿父级上溯）
 local function IsDescendant(node, root)
