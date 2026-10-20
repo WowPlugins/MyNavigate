@@ -280,6 +280,34 @@ local function Remember(item)
 	if #history > 24 then tremove(history, 1) end
 end
 
+-- 节点是否属于某个窗口（沿父级上溯）
+local function InRoot(node, root)
+	local f = node
+	while f and f ~= root do
+		f = f.GetParent and f:GetParent()
+	end
+	return f == root
+end
+
+-- 在指定窗口内找离 (x, y) 最近的可见节点。
+-- 面板切换导致当前控件被藏掉时用它重新落地：只在同一个窗口内选，
+-- 不会因为「离光标最近」而跳到另一个窗口或另一栏。
+local function NearestInRoot(root, x, y)
+	local best, bestDist
+	for _, item in Node:IterateCache() do
+		if InRoot(item.node, root) then
+			local nx, ny = item.node:GetCenter()
+			if nx and ny then
+				local dist = Node:GetDistanceSum(x, y, nx, ny)
+				if not bestDist or dist < bestDist then
+					best, bestDist = item, dist
+				end
+			end
+		end
+	end
+	return best
+end
+
 -- 回溯：从记忆栈里取最后一个仍然可见的节点
 local function BacktrackItem()
 	while #history > 0 do
@@ -307,6 +335,14 @@ function Cursor:MoveTo(item)
 	end
 end
 
+-- 只重建缓存、不移动光标；返回可导航节点数。
+-- 新窗口刚打开时它的控件还在陆续创建，Core 用一个稳定的节点数判断「已经建完了」。
+function Cursor:ScanOnly()
+	Node:ClearCache()
+	Node:RunScan(ns.GetRootFrames())
+	return #Node.cache
+end
+
 -- 重新扫描所有白名单窗口，并重算当前节点。
 -- selectRoot：刚打开的窗口。传入时直接落到它里面，并且只移动一次
 --（否则 Refresh 先搬一次、SelectRoot 又搬一次，调用方看起来就是连跳）。
@@ -314,12 +350,22 @@ function Cursor:Refresh(selectRoot)
 	local roots = ns.GetRootFrames()
 	Node:ClearCache()
 	Node:RunScan(roots)
-	-- 当前节点所在窗口被关掉时，先回溯记忆栈，回到进入该窗口前的位置
+	-- 当前节点所在窗口被关掉时，先回溯记忆栈，回到进入该窗口前的位置；
+	-- 窗口本身还开着（只是面板换了 / 控件被藏）时只在窗口内重选，
+	-- 不翻记忆栈 —— 那里可能存着另一个窗口的旧位置，会造成跨窗口跳。
 	local seed = current
+	local nextItem
 	if seed and not (Node:IsRelevant(seed.node) and Node:IsDrawn(seed.node, seed.super)) then
-		seed = BacktrackItem() or seed
+		local root = seed.node and TopParent(seed.node)
+		if root and root:IsVisible() then
+			local x, y = self:GetCenter()
+			nextItem = NearestInRoot(root, x, y)
+			seed = nil
+		else
+			seed = BacktrackItem() or seed
+		end
 	end
-	local nextItem = Node:GetArbitraryCandidate(seed, seed, self:GetCenter())
+	nextItem = nextItem or Node:GetArbitraryCandidate(seed, seed, self:GetCenter())
 	-- 调试输出：只在开启调试时才拼字符串（否则每次扫描都白拼一份名字表）
 	if MyNavigateDB and MyNavigateDB.debug then
 		local names = {}
@@ -353,13 +399,21 @@ function Cursor:UIControl(key, state)
 	Node:RunScan(ns.GetRootFrames())
 
 	local node = current and current.node
-	if not (node and Node:IsRelevant(node) and Node:IsDrawn(node, current.super)) then
-		-- 当前节点已失效（窗口关了 / 面板换了 / 滚出视口）：落到最近的有效节点，
+	if not (node and Node:IsRelevant(node)) then
+		-- 当前节点真的没了（窗口关了 / 面板整个换掉）：落到最近的有效节点，
 		-- 这一拍不再做方向移动，避免一次按键连搬两次
 		local seed = current
 		if seed and not Node:IsRelevant(seed.node) then seed = BacktrackItem() or seed end
 		self:MoveTo(Node:GetArbitraryCandidate(seed, seed, self:GetCenter()))
-	elseif state == KEY.STATE_DOWN and current then
+		return current and current.node
+	end
+	if not Node:IsDrawn(node, current.super) then
+		-- 节点还在，只是滚动动画还没把它带进视口：把它滚回来，不要换节点。
+		-- 换节点会按「离光标最近」重选，很容易突然跳到窗口的另一边/另一栏，
+		-- 而玩家其实只是在同一个列表里按住上/下。
+		if current.super then Scroll:To(node, current.super) end
+	end
+	if state == KEY.STATE_DOWN and current then
 		local nextItem, changed = Node:GetBestCandidate(current, key)
 		if not changed then nextItem = Node:GetClosestCandidate(current, key) end
 		if nextItem then self:MoveTo(nextItem) end
@@ -403,6 +457,17 @@ function Cursor:Action(name)
 end
 
 function Cursor:GetCurrentNode() return current and current.node end
+
+-- 当前节点是否已经在这个窗口里（玩家可能抢在自动落点之前自己导航进去了）
+function Cursor:IsCurrentInRoot(root)
+	local node = current and current.node
+	if not node or not root then return false end
+	local f = node
+	while f and f ~= root do
+		f = f.GetParent and f:GetParent()
+	end
+	return f == root
+end
 
 -- 外部即将重新落点（如新窗口打开、需要等它建好再落）时调用：
 -- 把「刚落地」的时间刷新一下，让 OnUpdate 在这段宽限期内不要自动纠偏，
@@ -466,13 +531,13 @@ Cursor:SetScript('OnUpdate', function(self, elapsed)
 		-- 这种抖动下一拍就恢复。先放一拍再看，否则会误触发下面的重扫，
 		-- 把光标挪到别的节点上（表现为「刚过到右边，立即又跳到另一个位置」）。
 		if GetTime() - lastSetTime < 0.3 then return end
-		-- 确实不见了：先回溯记忆栈；没有可回溯的就重新扫描，落到一个仍然可见的节点上。
-		-- 不要直接收起：current 一旦清空，OnUpdate 就再也不会跑，光标会凭空消失，
-		-- 必须等玩家按一次动作键（Action 里重新 Refresh）才回来。
-		local item = BacktrackItem()
-		if item then
-			self:MoveTo(item)
-		else
+		-- 确实不见了。窗口本身还开着（只是面板换了 / 控件被藏）：重新扫描并在
+		-- 同一个窗口内落地。不要翻记忆栈 —— 里面可能是另一个窗口的旧位置，
+		-- 翻出来就会「突然从窗口一边跳到另一边」。
+		-- 窗口已经关了的话交给 Core 的 watcher 统一处理，这里不抢跑，
+		-- 否则会先落到旧窗口的位置、下一拍再落到新窗口（连跳两次）。
+		local root = TopParent(current.node)
+		if root and root:IsVisible() then
 			self:Refresh()
 		end
 	else

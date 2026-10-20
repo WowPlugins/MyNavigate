@@ -255,12 +255,19 @@ local watchTimer, shown = 0, {}
 -- 立刻落点会先落到一个马上被隐藏的占位控件上，下一拍再被纠正 —— 看起来就是连跳两次。
 local pendingRoot
 local pendingSince = 0
+local pendingCount         -- 上一次只看不落时的节点数，用来判断新窗口是否已经建完
+local pendingTries = 0     -- 等待拍数上限，防止界面一直变化时永远不落点
+-- 只检测到「有窗口关闭」时也压一拍：有些窗口是先关掉旧的、下一拍才显示新的，
+-- 立刻按关闭处理会先落到旧位置，等新窗口出现再落一次（连跳两次）。
+local closePending = false
+local closeSince = 0
 watcher:SetScript('OnUpdate', function(_, elapsed)
 	watchTimer = watchTimer + elapsed
 	if watchTimer < 0.2 then return end
 	watchTimer = 0
 	if MyNavigateDB and MyNavigateDB.enabled == false then
 		pendingRoot = nil
+		closePending = false
 		ns.navActive = false
 		if ns.SetGamepadOverride then ns.SetGamepadOverride(false) end
 		return
@@ -287,34 +294,63 @@ watcher:SetScript('OnUpdate', function(_, elapsed)
 	-- 手柄按键的接管由 Cursor:Refresh 依据「是否真有可导航节点」决定
 	if pendingRoot then
 		local root = pendingRoot
-		pendingRoot = nil
 		-- 这 0.2s 内玩家已经自己按方向键搬过光标（UIControl 会直接落点）：
 		-- 放弃这次自动落点，否则会再挪一次，变成连跳
 		local moved = ns.Cursor.GetLastMoveTime and ns.Cursor:GetLastMoveTime() > pendingSince
-		if not moved then
-			if root:IsVisible() and ns.IsNavigableRoot(root) then
-				-- 这一拍再扫描并直接落到它里面（Refresh 只移动一次）
-				ns.Cursor:Refresh(root)
+		if moved then
+			pendingRoot = nil
+		else
+			-- 只看不落：节点数这一拍和上一拍一致，说明窗口里的控件已经建完、布局稳定，
+			-- 这时再正式落点，就不会先落在一个马上被隐藏的占位控件上（避免「先落一处、
+			-- 零点几秒后又跳到另一处」）。一直不稳定时最多等 5 拍。
+			pendingTries = pendingTries + 1
+			local count = ns.Cursor:ScanOnly()
+			if count == pendingCount or pendingTries > 5 then
+				pendingRoot = nil
+				if root:IsVisible() and ns.IsNavigableRoot(root) then
+					ns.Cursor:Refresh(root)
+				else
+					ns.Cursor:Refresh()
+				end
 			else
-				ns.Cursor:Refresh()
+				pendingCount = count
 			end
 		end
 		-- 同一拍里又有别的窗口新开，留到下一拍处理（shown 已更新，不会再被识别为 opened）
-		if opened and opened ~= root then
+		if opened and opened ~= root and not pendingRoot then
 			pendingRoot = opened
 			pendingSince = GetTime()
+			pendingCount = ns.Cursor:ScanOnly()
+			pendingTries = 0
 		end
 		return
 	end
 	if changed then
 		if opened then
+			-- 玩家可能已经抢在自动落点之前自己导航进这个窗口了：那就别再搬一次
+			if ns.Cursor.IsCurrentInRoot and ns.Cursor:IsCurrentInRoot(opened) then
+				closePending = false
+				return
+			end
+			closePending = false
 			pendingRoot = opened
 			pendingSince = GetTime()
-			-- 这 0.2s 内别让 OnUpdate 自动纠偏，否则会多挪一次
+			pendingTries = 0
+			pendingCount = ns.Cursor:ScanOnly()
+			-- 等待期间别让 OnUpdate 自动纠偏，否则会多挪一次
 			if ns.Cursor.HoldAutoCorrect then ns.Cursor:HoldAutoCorrect() end
 		else
-			ns.Cursor:Refresh()
+			-- 只有窗口关闭：先压一拍，等下一拍确认没有新窗口再刷新
+			closePending = true
+			closeSince = GetTime()
 		end
+		return
+	end
+	if closePending then
+		closePending = false
+		-- 这一拍内玩家已经自己动过光标的话，就不要再刷新搬一次
+		local moved = ns.Cursor.GetLastMoveTime and ns.Cursor:GetLastMoveTime() > closeSince
+		if not moved then ns.Cursor:Refresh() end
 	end
 end)
 
