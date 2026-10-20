@@ -70,9 +70,6 @@ local current, lastNode
 -- 最近一次落地的时间：刚落地时节点的 IsVisible 常有瞬时抖动（滚动帧重排 / 外部 UI
 -- 换布局），OnUpdate 要据此放一拍再判定，否则会误触发重扫、把光标挪到别的节点上
 local lastSetTime = 0
--- 滚动帧滚动过 → 视口内容变了，下次方向键需要重扫才能看到新滚进来的节点
--- （否则只能停留在第一次扫描时可见的那批节点上）
-local scrollDirty = false
 
 local function Debug(...)
 	if MyNavigateDB and MyNavigateDB.debug then
@@ -128,13 +125,11 @@ function Scroll:To(node, super)
 		local newVert = currVert + (scrollY - nodeY)
 		ScrollActive[super] = { vert = newVert < 0 and 0 or newVert > maxVert and maxVert or newVert }
 		Scroll:SetScript('OnUpdate', Scroll.Offset)
-		scrollDirty = true
 	end
 end
 
 -- 上翻 / 下翻：默认 PageUp / PageDown（设置面板可改），只在窗口打开、导航生效时触发。
--- 优先滚「当前节点所在的滚动帧」，没有就退回缓存里任意一个可滚动的帧；
--- 滚动会改变视口内容，置 scrollDirty 让下一次方向键重扫，才能看到新滚进来的行。
+-- 优先滚「当前节点所在的滚动帧」，没有就退回缓存里任意一个可滚动的帧。
 local SCROLL_STEP = 40   -- 一次按键滚动的像素
 function Cursor:Scroll(delta)
 	local target = current and current.super
@@ -155,7 +150,6 @@ function Cursor:Scroll(delta)
 	-- 复用 ScrollActive 的缓动，滚动更顺滑（与导航到视口外节点时的滚动一致）
 	ScrollActive[target] = { vert = newVert }
 	Scroll:SetScript('OnUpdate', Scroll.Offset)
-	scrollDirty = true
 end
 
 -- 提示框里每个动作键一行的颜色（沿用 SimpleCursor 的彩色提示风格）
@@ -311,7 +305,6 @@ function Cursor:Refresh()
 	local roots = ns.GetRootFrames()
 	Node:ClearCache()
 	Node:RunScan(roots)
-	scrollDirty = false
 	-- 当前节点所在窗口被关掉时，先回溯记忆栈，回到进入该窗口前的位置
 	local seed = current
 	if seed and not (Node:IsRelevant(seed.node) and Node:IsDrawn(seed.node, seed.super)) then
@@ -337,33 +330,25 @@ function Cursor:Refresh()
 	end
 end
 
--- 方向键入口：缓存仍有效时直接复用，避免每次按键全量重扫。
--- 窗口开关引起的刷新已由 Core.lua 的 watcher（每 0.2s）负责；这里只在
--- 「当前节点已失效」或「滚动帧刚滚动过（视口内容变了）」时才重扫。
+-- 方向键入口：每次按键前重建缓存。
+-- 不能复用上一次的缓存：切分类会整块换掉右侧面板、滚动帧也会换掉视口内容，
+-- 缓存里可能留着已经隐藏的旧节点 —— 先落过去、下一拍再被纠正，
+-- 画面上就是「刚过到右边，立即又跳到另一个位置」。
+-- 扫描本身已改为迭代式、不再转发变长参数（见 Node:Scan），单次开销可控。
 function Cursor:UIControl(key, state)
+	Node:ClearCache()
+	Node:RunScan(ns.GetRootFrames())
+
 	local node = current and current.node
-	local usable = node and Node:IsRelevant(node) and Node:IsDrawn(node, current.super)
-	-- 滚动帧刚滚过视口：只需要重建缓存（让新滚进来的行成为候选），不要顺手移动光标。
-	-- 否则一次按键会连搬两次：Refresh 自己搬一次，下面选方向又搬一次，
-	-- 画面上就是「先跳到 A、紧接着又跳到 B」。
-	if usable and scrollDirty then
-		Node:ClearCache()
-		Node:RunScan(ns.GetRootFrames())
-		scrollDirty = false
-		usable = #Node.cache > 0
-			and Node:IsRelevant(node) and Node:IsDrawn(node, current.super)
-	end
-	-- 当前节点真的失效（窗口关了 / 被藏 / 滚出视口）时才走完整刷新
-	if not usable then
-		self:Refresh()
-	end
-	if state == KEY.STATE_DOWN and current then
-		local changed
-		local nextItem
-		nextItem, changed = Node:GetBestCandidate(current, key)
-		if not changed then
-			nextItem = Node:GetClosestCandidate(current, key)
-		end
+	if not (node and Node:IsRelevant(node) and Node:IsDrawn(node, current.super)) then
+		-- 当前节点已失效（窗口关了 / 面板换了 / 滚出视口）：落到最近的有效节点，
+		-- 这一拍不再做方向移动，避免一次按键连搬两次
+		local seed = current
+		if seed and not Node:IsRelevant(seed.node) then seed = BacktrackItem() or seed end
+		self:MoveTo(Node:GetArbitraryCandidate(seed, seed, self:GetCenter()))
+	elseif state == KEY.STATE_DOWN and current then
+		local nextItem, changed = Node:GetBestCandidate(current, key)
+		if not changed then nextItem = Node:GetClosestCandidate(current, key) end
 		if nextItem then self:MoveTo(nextItem) end
 	end
 	return current and current.node

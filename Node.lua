@@ -268,8 +268,8 @@ function Node:GetClosestCandidate(cur, key, curNodeChanged)
 end
 
 function Node:GetArbitraryCandidate(cur, old, x, y)
-	return (old and self:IsRelevant(old.node) and self:IsDrawn(old.node)) and old or
-		(cur and self:IsRelevant(cur.node) and self:IsDrawn(cur.node)) and cur or
+	return (old and self:IsRelevant(old.node) and self:IsDrawn(old.node, old.super)) and old or
+		(cur and self:IsRelevant(cur.node) and self:IsDrawn(cur.node, cur.super)) and cur or
 		(not x or not y) and self:GetFirstEligibleCacheItem() or
 		(self:HasItems()) and self:GetPriorityCandidate(x, y)
 end
