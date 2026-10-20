@@ -255,6 +255,8 @@ function Cursor:SetNode(node, object, super)
 end
 
 function Cursor:HideNode()
+	-- 临时诊断：不管从哪条路径收起，都会在这里留下记录
+	Debug('收起光标(HideNode)', lastNode and (lastNode:GetName() or lastNode:GetObjectType()) or 'nil')
 	RunScript(lastNode, 'OnLeave')
 	lastNode, current = nil, nil
 	HintBox:Hide()
@@ -455,7 +457,10 @@ Cursor:SetScript('OnUpdate', function(self, elapsed)
 	self.Timer = 0
 	if not current then return end
 	if not current.node:IsVisible() then
+		-- 临时诊断：节点自身变隐藏（如 faux 滚动列表把滚出范围的行 Hide 掉）走这条路径
 		local item = BacktrackItem()
+		Debug('节点已不可见', current.node:GetName() or current.node:GetObjectType(),
+			item and ('回溯->'..(item.node:GetName() or item.node:GetObjectType())) or '无回溯')
 		if item then
 			self:MoveTo(item)
 		else
