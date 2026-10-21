@@ -229,8 +229,9 @@ function Cursor:SetPosition(node)
 	self:SetHighlight(node)
 	self:ClearAllPoints()
 	self:SetPoint('CENTER', node, 'CENTER', 0, 0)
-	-- 提示框贴在节点右上角外侧，尺寸按文字自适应（与 SimpleCursor 一致）。
-	-- 点不动的节点属于提醒，即使关掉了常规提示也照样显示，避免按了没反应还以为插件坏了。
+	-- 提示框贴在节点右下角外侧（即金色边框的右下角），向右下展开，尺寸按文字自适应
+	--（与 SimpleCursor 一致）。点不动的节点属于提醒，即使关掉了常规提示也照样显示，
+	-- 避免按了没反应还以为插件坏了。
 	if MyNavigateDB and MyNavigateDB.hint == false and not IsUnclickable(node) then
 		HintBox:Hide()
 	else
@@ -238,7 +239,7 @@ function Cursor:SetPosition(node)
 		HintBox:SetWidth(HintText:GetStringWidth() + 16)
 		HintBox:SetHeight(HintText:GetStringHeight() + 16)
 		HintBox:ClearAllPoints()
-		HintBox:SetPoint('BOTTOMLEFT', node, 'TOPRIGHT', 4, 2)
+		HintBox:SetPoint('TOPLEFT', node, 'BOTTOMRIGHT', 4, -4)
 		HintBox:Show()
 	end
 	self:Show()
