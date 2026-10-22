@@ -184,12 +184,6 @@ function Node:ScrubCache(i, item)
 			local rect = self.rects[index]
 			if self:DoNodeAndRectIntersect(node, rect)
 				and not IsAncestor(rect.node, node) and not IsAncestor(node, rect.node) then
-				-- 临时诊断：确认「按下跳过中间几个按钮」是不是节点在这里被删掉的
-				if ns.Debug then
-					local r = rect.node
-					ns.Debug('剔除', node:GetName() or node:GetObjectType(),
-						'被', r:GetName() or r:GetObjectType(), level, rect.level)
-				end
 				i = self:RemoveCacheItem(i)
 				break
 			end

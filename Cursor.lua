@@ -9,7 +9,6 @@
 local ADDON, ns = ...
 local KEY, Node = ns.KEY, ns.Node
 local abs, next, pairs, pcall = math.abs, next, pairs, pcall
-local floor = math.floor
 local tremove = table.remove
 local NL = string.char(10)   -- 提示框每行之间的换行符
 
@@ -441,21 +440,6 @@ function Cursor:UIControl(key, state)
 		if current.super then Scroll:To(node, current.super) end
 	end
 	if state == KEY.STATE_DOWN and current then
-		-- 临时诊断：按键时把当前窗口里的节点连同坐标、层级全部打出来，
-		-- 用来确认「按下跳过了中间几个按钮」到底是节点没进缓存，还是选点算错了
-		if MyNavigateDB and MyNavigateDB.debug then
-			local list = {}
-			for _, item in Node:IterateCache() do
-				if InRoot(item.node, root) then
-					local x, y = item.node:GetCenter()
-					list[#list + 1] = (item.node:GetName() or item.object)..'@'
-						..floor(x or -1)..','..floor(y or -1)..'#'..item.level
-				end
-			end
-			Debug('按键', ({ '上', '下', '左', '右' })[key],
-				'根', root and (root:GetName() or '?') or 'nil',
-				'缓存', #Node.cache, table.concat(list, ' | '))
-		end
 		local nextItem, changed = Node:GetBestCandidate(current, key)
 		if not changed then
 			nextItem = Node:GetClosestCandidate(current, key)
