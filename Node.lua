@@ -35,11 +35,17 @@ if not UIDoFramesIntersect then
 end
 
 local Node = {
+	-- 方向过滤：只要求目标在指定方向上。
+	-- 这里不再额外要求「垂直距离大于水平距离」（旧写法是 vert > horz）：
+	-- 按钮宽度不一致时（如 Immersion 的对话选项，中心 x 相差几十像素），
+	-- 行距只有几十像素，水平偏移一超过行距，中间几行就会被整行跳过，
+	-- 表现为「按下从第 1 个直接跳到第 4 个」。去掉门槛后只用下面的加权距离比大小，
+	-- 与 SimpleCursor 的做法一致（它也是只看方向 + 加权代价）。
 	distance = {
-		[KEY.UP]    = function(_, destY, horz, vert, _, thisY) return (vert > horz and destY > thisY) end,
-		[KEY.DOWN]  = function(_, destY, horz, vert, _, thisY) return (vert > horz and destY < thisY) end,
-		[KEY.LEFT]  = function(destX, _, horz, vert, thisX, _) return (vert < horz and destX < thisX) end,
-		[KEY.RIGHT] = function(destX, _, horz, vert, thisX, _) return (vert < horz and destX > thisX) end,
+		[KEY.UP]    = function(_, destY, _, _, _, thisY) return (destY > thisY) end,
+		[KEY.DOWN]  = function(_, destY, _, _, _, thisY) return (destY < thisY) end,
+		[KEY.LEFT]  = function(destX, _, _, _, thisX, _) return (destX < thisX) end,
+		[KEY.RIGHT] = function(destX, _, _, _, thisX, _) return (destX > thisX) end,
 	},
 	direction = {
 		[KEY.UP]    = function(_, destY, _, _, _, thisY) return (destY > thisY) end,
@@ -159,11 +165,31 @@ function Node:GetRectBound(level)
 	return lo
 end
 
+-- 判断 a 是不是 b 自身或 b 的祖先。
+-- 遮挡剔除时用：按钮自己的装饰子帧（setAllPoints 的 Overlay/Hilite 之类）也会
+-- 覆盖按钮中心，但那属于控件自己的一部分，不是挡在它前面的东西，不能据此把按钮删掉。
+local function IsAncestor(a, b)
+	local f = b
+	while f do
+		if f == a then return true end
+		f = f.GetParent and f:GetParent()
+	end
+	return false
+end
+
 function Node:ScrubCache(i, item)
 	while item do
 		local node, level = item.node, item.level
 		for index = 1, self:GetRectBound(level) - 1 do
-			if self:DoNodeAndRectIntersect(node, self.rects[index]) then
+			local rect = self.rects[index]
+			if self:DoNodeAndRectIntersect(node, rect)
+				and not IsAncestor(rect.node, node) and not IsAncestor(node, rect.node) then
+				-- 临时诊断：确认「按下跳过中间几个按钮」是不是节点在这里被删掉的
+				if ns.Debug then
+					local r = rect.node
+					ns.Debug('剔除', node:GetName() or node:GetObjectType(),
+						'被', r:GetName() or r:GetObjectType(), level, rect.level)
+				end
 				i = self:RemoveCacheItem(i)
 				break
 			end

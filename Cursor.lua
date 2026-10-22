@@ -9,6 +9,7 @@
 local ADDON, ns = ...
 local KEY, Node = ns.KEY, ns.Node
 local abs, next, pairs, pcall = math.abs, next, pairs, pcall
+local floor = math.floor
 local tremove = table.remove
 local NL = string.char(10)   -- 提示框每行之间的换行符
 
@@ -440,8 +441,38 @@ function Cursor:UIControl(key, state)
 		if current.super then Scroll:To(node, current.super) end
 	end
 	if state == KEY.STATE_DOWN and current then
+		-- 临时诊断：按键时把当前窗口里的节点连同坐标、层级全部打出来，
+		-- 用来确认「按下跳过了中间几个按钮」到底是节点没进缓存，还是选点算错了
+		if MyNavigateDB and MyNavigateDB.debug then
+			local list = {}
+			for _, item in Node:IterateCache() do
+				if InRoot(item.node, root) then
+					local x, y = item.node:GetCenter()
+					list[#list + 1] = (item.node:GetName() or item.object)..'@'
+						..floor(x or -1)..','..floor(y or -1)..'#'..item.level
+				end
+			end
+			Debug('按键', ({ '上', '下', '左', '右' })[key],
+				'根', root and (root:GetName() or '?') or 'nil',
+				'缓存', #Node.cache, table.concat(list, ' | '))
+		end
 		local nextItem, changed = Node:GetBestCandidate(current, key)
-		if not changed then nextItem = Node:GetClosestCandidate(current, key) end
+		if not changed then
+			nextItem = Node:GetClosestCandidate(current, key)
+			-- GetClosestCandidate 找不到时会把 current 原样返回
+			if nextItem == current then nextItem = nil end
+		end
+		if not nextItem and not scannedAll then
+			-- 当前窗口里这个方向上没有节点（走到窗口边缘了）：补一次全量扫描再找，
+			-- 这样并排打开的背包和银行之间仍然能用方向键跨过去
+			Node:ClearCache()
+			Node:RunScan(ns.GetRootFrames())
+			nextItem, changed = Node:GetBestCandidate(current, key)
+			if not changed then
+				nextItem = Node:GetClosestCandidate(current, key)
+				if nextItem == current then nextItem = nil end
+			end
+		end
 		if nextItem then self:MoveTo(nextItem) end
 	end
 	return current and current.node
@@ -510,9 +541,15 @@ local function IsDescendant(node, root)
 	return f == root
 end
 
+-- 窗口右上角的关闭按钮：落点时要跳过它，避免一打开窗口光标就停在关闭按钮上
+local function IsCloseButton(node)
+	local name = node.GetName and node:GetName()
+	return name and name:find('CloseButton$') ~= nil and true or false
+end
+
 -- 把光标直接落到指定根窗口里的第一个节点：窗口刚打开时自动选中用。
 -- 落点沿用 SimpleCursor 的评分法：score = ny*10 - nx（越靠上、越靠左分越高），
--- 取第二高分，跳过最高分那个（通常是右上角的关闭按钮）。
+-- 最高分通常是右上角的关闭按钮，跳过它取下一个。
 function Cursor:SelectRoot(root)
 	local scored = {}
 	for i = 1, #Node.cache do
@@ -526,7 +563,11 @@ function Cursor:SelectRoot(root)
 	end
 	if #scored == 0 then return false end
 	table.sort(scored, function(a, b) return a.score > b.score end)
-	self:MoveTo((scored[2] or scored[1]).item)
+	-- 只有最高分确实是关闭按钮时才取第二名；窗口里没有关闭按钮时（比如 Immersion
+	-- 的对话选项按钮），最高分就是第一个选项，盲目取第二名会直接落到第二个选项上
+	local target = scored[1]
+	if IsCloseButton(target.item.node) then target = scored[2] or target end
+	self:MoveTo(target.item)
 	return true
 end
 
