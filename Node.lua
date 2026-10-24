@@ -90,6 +90,13 @@ function Node:IsRelevant(node)
 	return node and not node.ignoreNode and node:IsVisible() and not IsScrollBar(node)
 end
 
+-- 按钮黑名单：名字在 MyNavigateDB.nodeBlack 里的控件不作为导航节点。
+-- 只跳过自身，不截断子树（见 Scan 里的说明）。
+function Node:IsNodeBlacklisted(node)
+	local name = node.GetName and node:GetName()
+	return (name and ns.IsNodeBlacklisted(name)) and true or false
+end
+
 function Node:IsTree(node) return not node.ignoreChildren end
 
 function Node:IsDrawn(node, super)
@@ -134,9 +141,12 @@ function Node:Scan(roots)
 		nodes[top], supers[top] = nil, nil
 		top = top - 1
 		if self:IsRelevant(node) then
+			local blacklisted = self:IsNodeBlacklisted(node)
 			local object, level = node:GetObjectType(), self:GetFrameLevel(node)
 			local mouseEnabled = IsMouseEnabled(node)
-			if self:IsDrawn(node, super) then
+			-- 按钮黑名单只跳过该节点自身，子帧照常遍历，
+			-- 避免把整个容器（及其内部控件）一起屏蔽掉
+			if not blacklisted and self:IsDrawn(node, super) then
 				if self:IsInteractive(node, object, mouseEnabled) then
 					self:CacheItem(node, object, super, level)
 				elseif mouseEnabled then

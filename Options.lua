@@ -2,7 +2,7 @@
 -- Options.lua: 图形设置面板（/mynav 或 /mynav config 打开）
 ---------------------------------------------------------------------
 -- 把所有可调项都收进暴雪设置界面（界面 → 插件 → MyNavigate）：
---   启用导航 / 弹窗独占 / 显示动作提示框 / 调试输出 / 自定义白名单与黑名单增删
+--   启用导航 / 弹窗独占 / 显示动作提示框 / 调试输出 / 白名单、黑名单与按钮黑名单增删
 -- 样式沿用暴雪标准设置面板（GameFontNormalLarge + UICheckButtonTemplate +
 -- UIPanelButtonTemplate），输入框用 tooltip 边框，与插件的整体观感一致。
 ---------------------------------------------------------------------
@@ -29,7 +29,7 @@ title:SetText('MyNavigate 手柄导航设置')
 
 local desc = content:CreateFontString(nil, 'ARTWORK', 'GameFontHighlightSmall')
 desc:SetPoint('TOPLEFT', title, 'BOTTOMLEFT', 0, -8)
-desc:SetText('方向键在窗口内移动光标，ABXY 执行动作。下面可以开关功能、设置按键、维护白名单与黑名单。')
+desc:SetText('方向键在窗口内移动光标，ABXY 执行动作。下面可以开关功能、设置按键、维护窗口名单与按钮黑名单。')
 
 ---------------------------------------------------------------------
 -- 复选框生成器（文字用自己创建的 FontString，兼容无名 checkbutton）
@@ -416,11 +416,22 @@ local blSection = CreateListSection(content, wlSection.listFrame, {
 })
 lastListFrame = blSection.listFrame
 
+-- 按钮黑名单：窗口内部的控件（例如不叫 close 的关闭按钮），导航时直接跳过
+local nbSection = CreateListSection(content, blSection.listFrame, {
+	key = 'nodeBlack',
+	title = '导航按钮黑名单',
+	listLabel = '当前按钮黑名单：',
+	hint = '输入控件帧名即可在导航时跳过它（也可用 /mynav skip 鼠标选取，用 /mynav tree 查名字）。',
+	emptyText = '（暂无，可在上方输入后点「添加」）',
+})
+lastListFrame = nbSection.listFrame
+
 -- 滚动帧尺寸变化时（面板拉伸 / 分辨率变化）重算内容宽度与高度
 scroll:SetScript('OnSizeChanged', function(self, width)
 	content:SetWidth(width)
 	wlSection.listFrame:SetWidth(width - 16)
 	blSection.listFrame:SetWidth(width - 16)
+	nbSection.listFrame:SetWidth(width - 16)
 	UpdateContentHeight()
 end)
 
@@ -430,6 +441,7 @@ panel:SetScript('OnShow', function()
 	content:SetWidth(scroll:GetWidth())
 	wlSection.listFrame:SetWidth(scroll:GetWidth() - 16)
 	blSection.listFrame:SetWidth(scroll:GetWidth() - 16)
+	nbSection.listFrame:SetWidth(scroll:GetWidth() - 16)
 	scroll:SetVerticalScroll(0)
 	cbEnabled:SetChecked(MyNavigateDB.enabled ~= false)
 	cbExclusive:SetChecked(MyNavigateDB.exclusive ~= false)
@@ -440,6 +452,7 @@ panel:SetScript('OnShow', function()
 	end
 	wlSection.update()
 	blSection.update()
+	nbSection.update()
 end)
 
 if InterfaceOptions_AddCategory then

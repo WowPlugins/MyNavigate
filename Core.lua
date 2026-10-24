@@ -87,6 +87,12 @@ function ns.IsBlacklisted(name)
 	return (black and black[name]) and true or false
 end
 
+-- 按钮黑名单：窗口内部控件的帧名，导航扫描时直接跳过（不影响窗口本身能否导航）
+function ns.IsNodeBlacklisted(name)
+	local black = MyNavigateDB and MyNavigateDB.nodeBlack
+	return (black and black[name]) and true or false
+end
+
 local function MatchesPanel(name)
 	if ns.IsBlacklisted(name) then return false end
 	-- 82 条模式全部以「^ + 大写字母」开头，先按首字母分桶，
@@ -180,6 +186,31 @@ local function AddBlocked(frame)
 	return true
 end
 
+-- 按钮级黑名单：把窗口内部的某个控件（如关闭按钮）排除在导航之外
+local function AddNodeBlocked(frame)
+	local name = frame and frame.GetName and frame:GetName()
+	if not name then
+		print('|cff739BD0MyNavigate|r: 这个控件没有名字，无法加入，换个位置点（或先用 /mynav tree 看帧名）')
+		return false
+	end
+	-- 顶层窗口属于窗口黑名单的职责；误点窗口背景时不要把它当按钮加进来
+	local parent = frame.GetParent and frame:GetParent()
+	if not parent or parent == UIParent or parent == WorldFrame then
+		print('|cff739BD0MyNavigate|r: '..name..' 是顶层窗口，请用 /mynav unpick 加入窗口黑名单')
+		return false
+	end
+	MyNavigateDB = MyNavigateDB or {}
+	MyNavigateDB.nodeBlack = MyNavigateDB.nodeBlack or {}
+	if MyNavigateDB.nodeBlack[name] then
+		print('|cff739BD0MyNavigate|r: '..name..' 已经在按钮黑名单里了')
+		return true
+	end
+	MyNavigateDB.nodeBlack[name] = true
+	print('|cff739BD0MyNavigate|r: 已加入按钮黑名单: '..name)
+	ns.Cursor:Refresh()
+	return true
+end
+
 local function GetRootFrame(f)
 	while f do
 		local parent = f.GetParent and f:GetParent()
@@ -241,6 +272,78 @@ local function FrameAtCursor()
 	return best
 end
 
+-- 递归找鼠标下最深、最上层的命名控件（优先可交互控件），用于按钮级黑名单选取
+local function IsNodeLike(f)
+	local ot = f.GetObjectType and f:GetObjectType()
+	if ot == 'Button' or ot == 'CheckButton' or ot == 'EditBox' or ot == 'Slider' then return true end
+	return (f.GetScript and (f:GetScript('OnEnter') or f:GetScript('OnMouseDown'))) and true or false
+end
+
+-- 从当前导航缓存里找鼠标下的节点：缓存里的就是「导航能选中的控件」，
+-- 按命中面积取最小的那个（按钮一定比它所在的窗口小），
+-- 这样点在关闭按钮上时不会因为父窗口 frame level 更高而误选整个窗口。
+local function NodeUnderCursor(cx, cy, us)
+	local cache = ns.Node and ns.Node.cache
+	if not cache then return nil end
+	local best, bestArea
+	for i = 1, #cache do
+		local f = cache[i].node
+		if f and f.IsVisible and f:IsVisible() then
+			local l, b, w, h = f:GetLeft(), f:GetBottom(), f:GetWidth(), f:GetHeight()
+			if l and b and w and h and w > 0 and h > 0 then
+				local fs = f:GetEffectiveScale() / us
+				local l2, b2 = l * fs, b * fs
+				local r2, t2 = l2 + w * fs, b2 + h * fs
+				if cx >= l2 and cx <= r2 and cy >= b2 and cy <= t2 then
+					local area = w * fs * h * fs
+					if not bestArea or area < bestArea then best, bestArea = f, area end
+				end
+			end
+		end
+	end
+	return best
+end
+
+local function NodeAtCursor()
+	local cx, cy = GetCursorPosition()
+	local us = UIParent:GetEffectiveScale()
+	cx, cy = cx / us, cy / us
+
+	-- 先查导航缓存，保证选中的就是导航实际能选中的控件
+	local hit = NodeUnderCursor(cx, cy, us)
+	if hit then return hit end
+
+	-- 缓存里没有（例如导航关闭 / 控件被遮挡）时，再按几何位置递归找：
+	-- 只接受可交互控件，深度优先于 frame level（子控件画在父窗口上面）
+	local best, bestPri
+	local stack, depths = { UIParent }, { 0 }
+	while #stack > 0 do
+		local f = stack[#stack]; stack[#stack] = nil
+		local depth = depths[#depths]; depths[#depths] = nil
+		local name = f.GetName and f:GetName()
+		if name and name ~= 'WorldFrame' and name:sub(1, 10) ~= 'MyNavigate'
+			and f:IsVisible() and IsNodeLike(f) then
+			local l, b, w, h = f:GetLeft(), f:GetBottom(), f:GetWidth(), f:GetHeight()
+			if l and b and w and h and w > 0 and h > 0 then
+				local fs = f:GetEffectiveScale() / us
+				local l2, b2 = l * fs, b * fs
+				local r2, t2 = l2 + w * fs, b2 + h * fs
+				if cx >= l2 and cx <= r2 and cy >= b2 and cy <= t2 then
+					local pri = (STRATA[f:GetFrameStrata()] or 0) * 1000000
+						+ depth * 1000 + f:GetFrameLevel()
+					if not bestPri or pri > bestPri then best, bestPri = f, pri end
+				end
+			end
+		end
+		local kids = { f:GetChildren() }
+		for i = 1, #kids do
+			stack[#stack + 1] = kids[i]
+			depths[#depths + 1] = depth + 1
+		end
+	end
+	return best
+end
+
 local function StartPick(mode)
 	pickMode = mode or 'add'
 	if not picker then
@@ -263,6 +366,17 @@ local function StartPick(mode)
 		picker:SetScript('OnMouseDown', function(self, button)
 			if button ~= 'LeftButton' then return end
 			self:Hide()
+			-- 按钮黑名单：完全不依赖 GetMouseFocus（遮罩刚隐藏时它可能还没刷新），
+			-- 直接在导航缓存 / 帧树里按几何位置找鼠标下的控件
+			if pickMode == 'node' then
+				local node = NodeAtCursor()
+				if not node then
+					print('|cff739BD0MyNavigate|r: 没取到鼠标下的可导航控件，请重试（可用 /mynav tree 查看控件名）')
+					return
+				end
+				AddNodeBlocked(node)
+				return
+			end
 			local focus = GetMouseFocus()
 			if not focus or focus == WorldFrame then
 				focus = FrameAtCursor()
@@ -282,6 +396,12 @@ local function StartPick(mode)
 		tinsert(UISpecialFrames, 'MyNavigatePicker')
 	end
 	MyNavigateDB = MyNavigateDB or {}
+	if pickMode == 'node' then
+		picker.text:SetText('MyNavigate 按钮黑名单选取：用鼠标左键点击要跳过的控件\n（ESC 取消）')
+		picker:Show()
+		print('|cff739BD0MyNavigate|r: 按钮黑名单选取已开启，点击要跳过的控件')
+		return
+	end
 	picker.text:SetText(pickMode == 'black'
 		and 'MyNavigate 黑名单选取模式：用鼠标左键点击要排除导航的窗口\n（ESC 取消）'
 		or 'MyNavigate 选取模式：用鼠标左键点击要加入导航的窗口\n（ESC 取消）')
@@ -563,8 +683,8 @@ frame:SetScript('OnEvent', function()
 		MyNavigateDB.saved = nil
 		SaveBindings(GetCurrentBindingSet())
 	end
-	-- 清掉误加入名单的自己（例如 MyNavigatePicker），白名单与黑名单都要清
-	for _, field in ipairs({ 'extra', 'black' }) do
+	-- 清掉误加入名单的自己（例如 MyNavigatePicker），各名单都要清
+	for _, field in ipairs({ 'extra', 'black', 'nodeBlack' }) do
 		local list = MyNavigateDB[field]
 		if list then
 			for k in pairs(list) do
@@ -672,6 +792,23 @@ SlashCmdList['MYNAV'] = function(msg)
 		StartPick('add')
 	elseif cmd == 'unpick' then
 		StartPick('black')
+	elseif cmd == 'skip' then
+		if arg then
+			MyNavigateDB.nodeBlack = MyNavigateDB.nodeBlack or {}
+			MyNavigateDB.nodeBlack[arg] = true
+			print('|cff739BD0MyNavigate|r: 已加入按钮黑名单: '..arg)
+			ns.Cursor:Refresh()
+		else
+			StartPick('node')
+		end
+	elseif cmd == 'unskip' then
+		if arg and MyNavigateDB.nodeBlack then
+			MyNavigateDB.nodeBlack[arg] = nil
+			print('|cff739BD0MyNavigate|r: 已移出按钮黑名单: '..arg)
+			ns.Cursor:Refresh()
+		else
+			print('|cff739BD0MyNavigate|r: 用法 /mynav unskip <帧名>')
+		end
 	elseif cmd == 'nodes' then
 		MyNavigateDB.debug = true
 		ns.Cursor:Refresh()
@@ -716,6 +853,6 @@ SlashCmdList['MYNAV'] = function(msg)
 			print('|cff739BD0MyNavigate|r: 设置面板未加载')
 		end
 	else
-		print('|cff739BD0MyNavigate|r: /mynav on|off|config|debug|dump [关键词]|pick|unpick|add <帧名>|remove <帧名>|block <帧名>|unblock <帧名>|nodes|tree <帧名>|reset')
+		print('|cff739BD0MyNavigate|r: /mynav on|off|config|debug|dump [关键词]|pick|unpick|skip [帧名]|unskip <帧名>|add <帧名>|remove <帧名>|block <帧名>|unblock <帧名>|nodes|tree <帧名>|reset')
 	end
 end
