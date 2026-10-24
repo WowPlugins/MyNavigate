@@ -87,10 +87,33 @@ function ns.IsBlacklisted(name)
 	return (black and black[name]) and true or false
 end
 
--- 按钮黑名单：窗口内部控件的帧名，导航扫描时直接跳过（不影响窗口本身能否导航）
-function ns.IsNodeBlacklisted(name)
-	local black = MyNavigateDB and MyNavigateDB.nodeBlack
-	return (black and black[name]) and true or false
+-- 控件的黑名单标识：有名字直接用名字；无名控件用「最近命名祖先 + 子帧索引路径」，
+-- 例如 @ImmersionFrame/3/2。GetChildren() 的顺序由插件创建顺序决定，
+-- 同一插件每次登录一致，所以路径可以跨 /reload 保存在存档里。
+function ns.GetNodeKey(frame)
+	local name = frame.GetName and frame:GetName()
+	if name then return name end
+	local parts, f = {}, frame
+	while f do
+		local parent = f.GetParent and f:GetParent()
+		if not parent then return nil end
+		local index
+		local kids = { parent:GetChildren() }
+		for i = 1, #kids do
+			if kids[i] == f then index = i break end
+		end
+		if not index then return nil end
+		parts[#parts + 1] = index
+		-- 找到命名祖先（UIParent 也算），把它上面的路径拼起来
+		local pname = parent.GetName and parent:GetName()
+		if pname then
+			local rev = {}
+			for i = #parts, 1, -1 do rev[#rev + 1] = parts[i] end
+			return '@' .. pname .. '/' .. table.concat(rev, '/')
+		end
+		f = parent
+	end
+	return nil
 end
 
 local function MatchesPanel(name)
@@ -188,25 +211,30 @@ end
 
 -- 按钮级黑名单：把窗口内部的某个控件（如关闭按钮）排除在导航之外
 local function AddNodeBlocked(frame)
-	local name = frame and frame.GetName and frame:GetName()
-	if not name then
-		print('|cff739BD0MyNavigate|r: 这个控件没有名字，无法加入，换个位置点（或先用 /mynav tree 看帧名）')
+	if not frame then
+		print('|cff739BD0MyNavigate|r: 没取到控件，请重试')
 		return false
 	end
 	-- 顶层窗口属于窗口黑名单的职责；误点窗口背景时不要把它当按钮加进来
 	local parent = frame.GetParent and frame:GetParent()
 	if not parent or parent == UIParent or parent == WorldFrame then
-		print('|cff739BD0MyNavigate|r: '..name..' 是顶层窗口，请用 /mynav unpick 加入窗口黑名单')
+		print('|cff739BD0MyNavigate|r: '..(frame:GetName() or '该控件')..' 是顶层窗口，请用 /mynav unpick 加入窗口黑名单')
+		return false
+	end
+	-- 无名控件用「祖先/子帧索引」路径做标识，同样可以保存和匹配
+	local key = ns.GetNodeKey(frame)
+	if not key then
+		print('|cff739BD0MyNavigate|r: 这个控件没有名字，也没法生成路径标识，换个位置点')
 		return false
 	end
 	MyNavigateDB = MyNavigateDB or {}
 	MyNavigateDB.nodeBlack = MyNavigateDB.nodeBlack or {}
-	if MyNavigateDB.nodeBlack[name] then
-		print('|cff739BD0MyNavigate|r: '..name..' 已经在按钮黑名单里了')
+	if MyNavigateDB.nodeBlack[key] then
+		print('|cff739BD0MyNavigate|r: '..key..' 已经在按钮黑名单里了')
 		return true
 	end
-	MyNavigateDB.nodeBlack[name] = true
-	print('|cff739BD0MyNavigate|r: 已加入按钮黑名单: '..name)
+	MyNavigateDB.nodeBlack[key] = true
+	print('|cff739BD0MyNavigate|r: 已加入按钮黑名单: '..key)
 	ns.Cursor:Refresh()
 	return true
 end
@@ -321,8 +349,8 @@ local function NodeAtCursor()
 		local f = stack[#stack]; stack[#stack] = nil
 		local depth = depths[#depths]; depths[#depths] = nil
 		local name = f.GetName and f:GetName()
-		if name and name ~= 'WorldFrame' and name:sub(1, 10) ~= 'MyNavigate'
-			and f:IsVisible() and IsNodeLike(f) then
+		local skip = name and (name == 'WorldFrame' or name:sub(1, 10) == 'MyNavigate')
+		if not skip and f ~= UIParent and f:IsVisible() and IsNodeLike(f) then
 			local l, b, w, h = f:GetLeft(), f:GetBottom(), f:GetWidth(), f:GetHeight()
 			if l and b and w and h and w > 0 and h > 0 then
 				local fs = f:GetEffectiveScale() / us
@@ -819,7 +847,12 @@ SlashCmdList['MYNAV'] = function(msg)
 			local item = cache[i]
 			local n = item.node
 			local x, y = n:GetCenter()
-			ns.Debug('  ', i, n:GetName() or ('('..n:GetObjectType()..')'), item.object,
+			local label = n:GetName()
+			if not label then
+				-- 无名控件打印黑名单标识（@祖先/子索引路径），可直接复制用于 /mynav skip
+				label = '('..n:GetObjectType()..' '..(ns.GetNodeKey(n) or '?')..')'
+			end
+			ns.Debug('  ', i, label, item.object,
 				'vis='..(n:IsVisible() and 'Y' or 'N'),
 				'drawn='..(Node:IsDrawn(n, item.super) and 'Y' or 'N'),
 				'xy='..tostring(x and math.floor(x))..','..tostring(y and math.floor(y)),

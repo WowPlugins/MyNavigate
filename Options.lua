@@ -421,7 +421,7 @@ local nbSection = CreateListSection(content, blSection.listFrame, {
 	key = 'nodeBlack',
 	title = '导航按钮黑名单',
 	listLabel = '当前按钮黑名单：',
-	hint = '输入控件帧名即可在导航时跳过它（也可用 /mynav skip 鼠标选取，用 /mynav tree 查名字）。',
+	hint = '输入控件帧名即可在导航时跳过它（无名控件可用 /mynav skip 鼠标选取，自动生成 @祖先/索引 路径标识）。',
 	emptyText = '（暂无，可在上方输入后点「添加」）',
 })
 lastListFrame = nbSection.listFrame

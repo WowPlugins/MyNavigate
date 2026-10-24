@@ -90,11 +90,15 @@ function Node:IsRelevant(node)
 	return node and not node.ignoreNode and node:IsVisible() and not IsScrollBar(node)
 end
 
--- 按钮黑名单：名字在 MyNavigateDB.nodeBlack 里的控件不作为导航节点。
--- 只跳过自身，不截断子树（见 Scan 里的说明）。
+-- 按钮黑名单：键可以是帧名（有名字的控件）或 @祖先/子索引 路径（无名控件），
+-- 见 Core.lua 的 ns.GetNodeKey。只跳过自身，不截断子树（见 Scan 里的说明）。
 function Node:IsNodeBlacklisted(node)
+	local black = MyNavigateDB and MyNavigateDB.nodeBlack
+	if not black or next(black) == nil then return false end
 	local name = node.GetName and node:GetName()
-	return (name and ns.IsNodeBlacklisted(name)) and true or false
+	if name then return black[name] and true or false end
+	local key = ns.GetNodeKey(node)
+	return (key and black[key]) and true or false
 end
 
 function Node:IsTree(node) return not node.ignoreChildren end
