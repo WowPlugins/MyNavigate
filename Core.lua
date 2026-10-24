@@ -80,7 +80,15 @@ for i = 1, #PANEL_PATTERNS do
 	bucket[#bucket + 1] = pattern
 end
 
+-- 导航黑名单：用户手动排除的窗口名，优先级最高。
+-- 名字一旦在黑名单里，即使命中内置模式或自定义白名单，也不会成为导航目标。
+function ns.IsBlacklisted(name)
+	local black = MyNavigateDB and MyNavigateDB.black
+	return (black and black[name]) and true or false
+end
+
 local function MatchesPanel(name)
+	if ns.IsBlacklisted(name) then return false end
 	-- 82 条模式全部以「^ + 大写字母」开头，先按首字母分桶，
 	-- 遍历窗口时只比对同首字母的那几条，避免每次都跑满 82 次 find
 	local bucket = PATTERN_INDEX[name:sub(1, 1):lower()]
@@ -117,8 +125,11 @@ function ns.GetRootFrames()
 	-- （可用设置面板里的「弹窗独占」开关关闭；默认开启）
 	if not (MyNavigateDB and MyNavigateDB.exclusive == false) then
 		for i = 1, #EXCLUSIVE_FRAMES do
-			local frame = _G[EXCLUSIVE_FRAMES[i]]
-			if frame and frame:IsVisible() then roots[#roots + 1] = frame end
+			local name = EXCLUSIVE_FRAMES[i]
+			local frame = _G[name]
+			if frame and frame:IsVisible() and not ns.IsBlacklisted(name) then
+				roots[#roots + 1] = frame
+			end
 		end
 		if #roots > 0 then return roots end
 	end
@@ -141,14 +152,34 @@ function ns.DumpFrames(filter)
 		if hit then
 			listed = listed + 1
 			if isNav then navigable = navigable + 1 end
-			ns.Debug('  ', name, visible and 'shown' or 'hidden', isNav and '可导航' or '')
+			ns.Debug('  ', name, visible and 'shown' or 'hidden',
+				isNav and '可导航' or (ns.IsBlacklisted(name) and '黑名单' or ''))
 		end
 	end
 	ns.Debug('列出', listed, '可导航', navigable)
 end
 
--- 鼠标选取模式：点击屏幕上的窗口，自动把它加入导航白名单
-local picker
+-- 鼠标选取模式：点击屏幕上的窗口，自动把它加入导航白名单 / 黑名单
+local picker, pickMode
+
+local function AddBlocked(frame)
+	local name = frame and frame.GetName and frame:GetName()
+	if not name then
+		print('|cff739BD0MyNavigate|r: 这个窗口没有名字，无法加入，换个位置点')
+		return false
+	end
+	MyNavigateDB = MyNavigateDB or {}
+	MyNavigateDB.black = MyNavigateDB.black or {}
+	if MyNavigateDB.black[name] then
+		print('|cff739BD0MyNavigate|r: '..name..' 已经在黑名单里了')
+		return true
+	end
+	MyNavigateDB.black[name] = true
+	print('|cff739BD0MyNavigate|r: 已加入导航黑名单: '..name)
+	ns.Cursor:Refresh()
+	return true
+end
+
 local function GetRootFrame(f)
 	while f do
 		local parent = f.GetParent and f:GetParent()
@@ -163,6 +194,10 @@ local function AddNavigable(frame)
 	local name = frame and frame.GetName and frame:GetName()
 	if not name then
 		print('|cff739BD0MyNavigate|r: 这个窗口没有名字，无法加入，换个位置点')
+		return false
+	end
+	if ns.IsBlacklisted(name) then
+		print('|cff739BD0MyNavigate|r: '..name..' 在黑名单里，先移出黑名单再加入白名单')
 		return false
 	end
 	if ns.IsNavigableRoot(frame) then
@@ -206,7 +241,8 @@ local function FrameAtCursor()
 	return best
 end
 
-local function StartPick()
+local function StartPick(mode)
+	pickMode = mode or 'add'
 	if not picker then
 		picker = CreateFrame('Frame', 'MyNavigatePicker', UIParent)
 		picker:SetAllPoints(UIParent)
@@ -221,7 +257,7 @@ local function StartPick()
 		text:SetFont(STANDARD_TEXT_FONT or 'Fonts\\FRIZQT__.TTF', 16, 'OUTLINE')
 		text:SetTextColor(1, 0.88, 0.1)
 		text:SetPoint('TOP', picker, 'TOP', 0, -80)
-		text:SetText('MyNavigate 选取模式：用鼠标左键点击要加入导航的窗口\n（ESC 取消）')
+		picker.text = text
 
 		-- 遮罩会挡住鼠标，所以先用 GetMouseFocus，取不到就用光标坐标做矩形命中检测
 		picker:SetScript('OnMouseDown', function(self, button)
@@ -235,15 +271,26 @@ local function StartPick()
 				print('|cff739BD0MyNavigate|r: 没取到鼠标下的窗口，请重试')
 				return
 			end
-			AddNavigable(GetRootFrame(focus))
+			if pickMode == 'black' then
+				AddBlocked(GetRootFrame(focus))
+			else
+				AddNavigable(GetRootFrame(focus))
+			end
 		end)
 
 		picker:Hide()
 		tinsert(UISpecialFrames, 'MyNavigatePicker')
 	end
 	MyNavigateDB = MyNavigateDB or {}
+	picker.text:SetText(pickMode == 'black'
+		and 'MyNavigate 黑名单选取模式：用鼠标左键点击要排除导航的窗口\n（ESC 取消）'
+		or 'MyNavigate 选取模式：用鼠标左键点击要加入导航的窗口\n（ESC 取消）')
 	picker:Show()
-	print('|cff739BD0MyNavigate|r: 选取模式已开启，点击要加入导航的窗口')
+	if pickMode == 'black' then
+		print('|cff739BD0MyNavigate|r: 黑名单选取模式已开启，点击要排除导航的窗口')
+	else
+		print('|cff739BD0MyNavigate|r: 选取模式已开启，点击要加入导航的窗口')
+	end
 end
 
 -- 自动跟随窗口：白名单窗口的可见集合发生变化时自动刷新光标。
@@ -516,11 +563,13 @@ frame:SetScript('OnEvent', function()
 		MyNavigateDB.saved = nil
 		SaveBindings(GetCurrentBindingSet())
 	end
-	-- 清掉误加入白名单的自己（例如 MyNavigatePicker）
-	local extra = MyNavigateDB.extra
-	if extra then
-		for k in pairs(extra) do
-			if k:sub(1, 10) == 'MyNavigate' then extra[k] = nil end
+	-- 清掉误加入名单的自己（例如 MyNavigatePicker），白名单与黑名单都要清
+	for _, field in ipairs({ 'extra', 'black' }) do
+		local list = MyNavigateDB[field]
+		if list then
+			for k in pairs(list) do
+				if k:sub(1, 10) == 'MyNavigate' then list[k] = nil end
+			end
 		end
 	end
 	-- 清理旧版本残留：曾被绑到 MYNAV_* 的实体键（SHIFT-1..8、F5..F10 等）应解除，
@@ -604,8 +653,25 @@ SlashCmdList['MYNAV'] = function(msg)
 			print('|cff739BD0MyNavigate|r: 已移出导航白名单: '..arg)
 			ns.Cursor:Refresh()
 		end
+	elseif cmd == 'block' then
+		if arg then
+			MyNavigateDB.black = MyNavigateDB.black or {}
+			MyNavigateDB.black[arg] = true
+			print('|cff739BD0MyNavigate|r: 已加入导航黑名单: '..arg)
+			ns.Cursor:Refresh()
+		else
+			print('|cff739BD0MyNavigate|r: 用法 /mynav block <帧名>')
+		end
+	elseif cmd == 'unblock' then
+		if arg and MyNavigateDB.black then
+			MyNavigateDB.black[arg] = nil
+			print('|cff739BD0MyNavigate|r: 已移出导航黑名单: '..arg)
+			ns.Cursor:Refresh()
+		end
 	elseif cmd == 'pick' then
-		StartPick()
+		StartPick('add')
+	elseif cmd == 'unpick' then
+		StartPick('black')
 	elseif cmd == 'nodes' then
 		MyNavigateDB.debug = true
 		ns.Cursor:Refresh()
@@ -650,6 +716,6 @@ SlashCmdList['MYNAV'] = function(msg)
 			print('|cff739BD0MyNavigate|r: 设置面板未加载')
 		end
 	else
-		print('|cff739BD0MyNavigate|r: /mynav on|off|config|debug|dump [关键词]|pick|add <帧名>|remove <帧名>|nodes|tree <帧名>|reset')
+		print('|cff739BD0MyNavigate|r: /mynav on|off|config|debug|dump [关键词]|pick|unpick|add <帧名>|remove <帧名>|block <帧名>|unblock <帧名>|nodes|tree <帧名>|reset')
 	end
 end

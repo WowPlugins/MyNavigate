@@ -2,7 +2,7 @@
 -- Options.lua: 图形设置面板（/mynav 或 /mynav config 打开）
 ---------------------------------------------------------------------
 -- 把所有可调项都收进暴雪设置界面（界面 → 插件 → MyNavigate）：
---   启用导航 / 弹窗独占 / 显示动作提示框 / 调试输出 / 自定义白名单增删
+--   启用导航 / 弹窗独占 / 显示动作提示框 / 调试输出 / 自定义白名单与黑名单增删
 -- 样式沿用暴雪标准设置面板（GameFontNormalLarge + UICheckButtonTemplate +
 -- UIPanelButtonTemplate），输入框用 tooltip 边框，与插件的整体观感一致。
 ---------------------------------------------------------------------
@@ -29,7 +29,7 @@ title:SetText('MyNavigate 手柄导航设置')
 
 local desc = content:CreateFontString(nil, 'ARTWORK', 'GameFontHighlightSmall')
 desc:SetPoint('TOPLEFT', title, 'BOTTOMLEFT', 0, -8)
-desc:SetText('方向键在窗口内移动光标，ABXY 执行动作。下面可以开关功能、设置按键、维护白名单。')
+desc:SetText('方向键在窗口内移动光标，ABXY 执行动作。下面可以开关功能、设置按键、维护白名单与黑名单。')
 
 ---------------------------------------------------------------------
 -- 复选框生成器（文字用自己创建的 FontString，兼容无名 checkbutton）
@@ -192,205 +192,235 @@ local kbScrollDown = CreateKeyButton(content, 'SCROLLDOWN', '下翻:')
 kbScrollDown:SetPoint('TOPLEFT', kbScrollUp, 'TOPRIGHT', 24, 0)
 
 ---------------------------------------------------------------------
--- 自定义白名单
+-- 名单区块（导航白名单 / 黑名单共用一套 UI）
 ---------------------------------------------------------------------
-local listTitle = content:CreateFontString(nil, 'ARTWORK', 'GameFontNormalLarge')
-listTitle:SetPoint('TOPLEFT', kbScrollUp, 'BOTTOMLEFT', 0, -24)
-listTitle:SetText('导航白名单')
-
-local listHint = content:CreateFontString(nil, 'ARTWORK', 'GameFontHighlight')
-listHint:SetPoint('TOPLEFT', listTitle, 'BOTTOMLEFT', 0, -8)
-listHint:SetJustifyH('LEFT')
-listHint:SetText('输入窗口名即可让它成为导航目标（用 /fstack 查看名字，内置白名单已覆盖常见窗口）。')
-
-local nameBox = CreateFrame('EditBox', nil, content)
-nameBox:SetSize(160, 24)
-nameBox:SetPoint('TOPLEFT', listHint, 'BOTTOMLEFT', 0, -12)
-nameBox:SetFontObject('ChatFontNormal')
-nameBox:SetAutoFocus(false)
-nameBox:SetTextInsets(5, 5, 0, 0)
-nameBox:SetBackdrop({
-	bgFile = 'Interface\\ChatFrame\\ChatFrameBackground',
-	edgeFile = 'Interface\\Tooltips\\UI-Tooltip-Border',
-	edgeSize = 12,
-	insets = { left = 3, right = 3, top = 3, bottom = 3 },
-})
-nameBox:SetBackdropColor(0, 0, 0, 0.8)
-nameBox:SetBackdropBorderColor(0.5, 0.5, 0.5, 1)
-nameBox:SetScript('OnEscapePressed', function(self) self:ClearFocus() end)
-
--- 列表标题行 + 「删除选中」按钮
-local listHead = content:CreateFontString(nil, 'ARTWORK', 'GameFontHighlight')
-listHead:SetPoint('TOPLEFT', nameBox, 'BOTTOMLEFT', 0, -14)
-listHead:SetJustifyH('LEFT')
-listHead:SetText(ACCENT .. '当前自定义白名单：|r')
-
-local listHint2 = content:CreateFontString(nil, 'ARTWORK', 'GameFontHighlightSmall')
-listHint2:SetPoint('TOPLEFT', listHead, 'BOTTOMLEFT', 0, -6)
-listHint2:SetJustifyH('LEFT')
-listHint2:SetText('点击条目即可选中（再点一次取消），选中后点「删除选中」移除。')
-
-local delBtn = CreateFrame('Button', nil, content, 'UIPanelButtonTemplate')
-delBtn:SetSize(88, 22)
-delBtn:SetPoint('LEFT', listHead, 'RIGHT', 10, 0)
-delBtn:SetText('删除选中')
-delBtn:Disable()
-
--- 白名单条目列表：每行是一个可点选的按钮，选中时显示淡蓝色底纹
-local listFrame = CreateFrame('Frame', nil, content)
-listFrame:SetPoint('TOPLEFT', listHint2, 'BOTTOMLEFT', 0, -8)
-listFrame:SetWidth(444)
-listFrame:SetHeight(18)
-
-local rows = {}
-local selected
-local UpdateList   -- 前向声明：行按钮回调会用到
-
-local function AcquireRow(i)
-	local row = rows[i]
-	if not row then
-		row = CreateFrame('Button', nil, listFrame)
-		row:SetHeight(18)
-		row:SetHighlightTexture('Interface\\QuestFrame\\UI-QuestTitleHighlight')
-		local text = row:CreateFontString(nil, 'ARTWORK', 'GameFontHighlightSmall')
-		text:SetPoint('LEFT', 6, 0)
-		text:SetJustifyH('LEFT')
-		row.text = text
-		local sel = row:CreateTexture(nil, 'BACKGROUND')
-		sel:SetTexture('Interface\\Buttons\\WHITE8X8')
-		sel:SetVertexColor(0.45, 0.61, 0.82, 0.35)
-		sel:SetAllPoints(row)
-		sel:Hide()
-		row.sel = sel
-		row:SetScript('OnClick', function(self)
-			if not self.entryName then return end
-			selected = (selected == self.entryName) and nil or self.entryName
-			UpdateList()
-		end)
-		rows[i] = row
-	end
-	return row
+local function Trim(text)
+	return (text or ''):gsub('^%s+', ''):gsub('%s+$', '')
 end
 
--- 内容帧高度随实际内容变化（列表最后一项是白名单，会随条目数变高）
+local function RefreshCursor() ns.Cursor:Refresh() end
+
+-- 内容帧高度随实际内容变化（最后一个名单区块的列表会随条目数变高）
+local lastListFrame
 local function UpdateContentHeight()
-	local top, bottom = content:GetTop(), listFrame:GetBottom()
+	local top = content:GetTop()
+	local bottom = lastListFrame and lastListFrame:GetBottom()
 	if top and bottom then
 		content:SetHeight((top - bottom) + 24)
 	end
 end
 
-local function Trim(text)
-	return (text or ''):gsub('^%s+', ''):gsub('%s+$', '')
-end
+-- 生成一个「名字列表」区块：标题 + 说明 + 输入框 + 增删按钮 + 可点选列表
+-- cfg = { key = 存档字段, title = 区块标题, listLabel = 列表标题, hint = 说明, emptyText = 空列表提示 }
+local function CreateListSection(parent, anchor, cfg)
+	local key = cfg.key
 
-UpdateList = function()
-	local extra = MyNavigateDB and MyNavigateDB.extra
-	local names = {}
-	if extra then
-		for name in pairs(extra) do names[#names + 1] = name end
+	local title = parent:CreateFontString(nil, 'ARTWORK', 'GameFontNormalLarge')
+	title:SetPoint('TOPLEFT', anchor, 'BOTTOMLEFT', 0, -24)
+	title:SetText(cfg.title)
+
+	local hint = parent:CreateFontString(nil, 'ARTWORK', 'GameFontHighlight')
+	hint:SetPoint('TOPLEFT', title, 'BOTTOMLEFT', 0, -8)
+	hint:SetJustifyH('LEFT')
+	hint:SetText(cfg.hint)
+
+	local nameBox = CreateFrame('EditBox', nil, parent)
+	nameBox:SetSize(160, 24)
+	nameBox:SetPoint('TOPLEFT', hint, 'BOTTOMLEFT', 0, -12)
+	nameBox:SetFontObject('ChatFontNormal')
+	nameBox:SetAutoFocus(false)
+	nameBox:SetTextInsets(5, 5, 0, 0)
+	nameBox:SetBackdrop({
+		bgFile = 'Interface\\ChatFrame\\ChatFrameBackground',
+		edgeFile = 'Interface\\Tooltips\\UI-Tooltip-Border',
+		edgeSize = 12,
+		insets = { left = 3, right = 3, top = 3, bottom = 3 },
+	})
+	nameBox:SetBackdropColor(0, 0, 0, 0.8)
+	nameBox:SetBackdropBorderColor(0.5, 0.5, 0.5, 1)
+	nameBox:SetScript('OnEscapePressed', function(self) self:ClearFocus() end)
+
+	-- 列表标题行 + 「删除选中」按钮
+	local listHead = parent:CreateFontString(nil, 'ARTWORK', 'GameFontHighlight')
+	listHead:SetPoint('TOPLEFT', nameBox, 'BOTTOMLEFT', 0, -14)
+	listHead:SetJustifyH('LEFT')
+	listHead:SetText(ACCENT .. cfg.listLabel .. '|r')
+
+	local listHint = parent:CreateFontString(nil, 'ARTWORK', 'GameFontHighlightSmall')
+	listHint:SetPoint('TOPLEFT', listHead, 'BOTTOMLEFT', 0, -6)
+	listHint:SetJustifyH('LEFT')
+	listHint:SetText('点击条目即可选中（再点一次取消），选中后点「删除选中」移除。')
+
+	local delBtn = CreateFrame('Button', nil, parent, 'UIPanelButtonTemplate')
+	delBtn:SetSize(88, 22)
+	delBtn:SetPoint('LEFT', listHead, 'RIGHT', 10, 0)
+	delBtn:SetText('删除选中')
+	delBtn:Disable()
+
+	-- 条目列表：每行是一个可点选的按钮，选中时显示淡蓝色底纹
+	local listFrame = CreateFrame('Frame', nil, parent)
+	listFrame:SetPoint('TOPLEFT', listHint, 'BOTTOMLEFT', 0, -8)
+	listFrame:SetWidth(444)
+	listFrame:SetHeight(18)
+
+	local rows, selected = {}, nil
+	local UpdateList
+
+	local function AcquireRow(i)
+		local row = rows[i]
+		if not row then
+			row = CreateFrame('Button', nil, listFrame)
+			row:SetHeight(18)
+			row:SetHighlightTexture('Interface\\QuestFrame\\UI-QuestTitleHighlight')
+			local text = row:CreateFontString(nil, 'ARTWORK', 'GameFontHighlightSmall')
+			text:SetPoint('LEFT', 6, 0)
+			text:SetJustifyH('LEFT')
+			row.text = text
+			local sel = row:CreateTexture(nil, 'BACKGROUND')
+			sel:SetTexture('Interface\\Buttons\\WHITE8X8')
+			sel:SetVertexColor(0.45, 0.61, 0.82, 0.35)
+			sel:SetAllPoints(row)
+			sel:Hide()
+			row.sel = sel
+			row:SetScript('OnClick', function(self)
+				if not self.entryName then return end
+				selected = (selected == self.entryName) and nil or self.entryName
+				UpdateList()
+			end)
+			rows[i] = row
+		end
+		return row
 	end
-	table.sort(names)
-	-- 选中项已被删掉时清掉选中状态
-	if selected and not (extra and extra[selected]) then selected = nil end
 
-	local n = #names
-	if n == 0 then
-		local row = AcquireRow(1)
-		row.entryName = nil
-		row.text:SetText('（暂无，可在上方输入后点「添加」）')
-		row.sel:Hide()
-		row:ClearAllPoints()
-		row:SetPoint('TOPLEFT', listFrame, 'TOPLEFT', 0, 0)
-		row:SetPoint('RIGHT', listFrame, 'RIGHT', 0, 0)
-		row:Show()
-		for i = 2, #rows do rows[i]:Hide() end
-		listFrame:SetHeight(18)
-	else
-		for i = 1, n do
-			local row = AcquireRow(i)
-			row.entryName = names[i]
-			row.text:SetText(names[i])
-			if selected == names[i] then row.sel:Show() else row.sel:Hide() end
+	UpdateList = function()
+		local data = MyNavigateDB and MyNavigateDB[key]
+		local names = {}
+		if data then
+			for name in pairs(data) do names[#names + 1] = name end
+		end
+		table.sort(names)
+		-- 选中项已被删掉时清掉选中状态
+		if selected and not (data and data[selected]) then selected = nil end
+
+		local n = #names
+		if n == 0 then
+			local row = AcquireRow(1)
+			row.entryName = nil
+			row.text:SetText(cfg.emptyText)
+			row.sel:Hide()
 			row:ClearAllPoints()
-			if i == 1 then
-				row:SetPoint('TOPLEFT', listFrame, 'TOPLEFT', 0, 0)
-			else
-				row:SetPoint('TOPLEFT', rows[i - 1], 'BOTTOMLEFT', 0, -2)
-			end
+			row:SetPoint('TOPLEFT', listFrame, 'TOPLEFT', 0, 0)
 			row:SetPoint('RIGHT', listFrame, 'RIGHT', 0, 0)
 			row:Show()
+			for i = 2, #rows do rows[i]:Hide() end
+			listFrame:SetHeight(18)
+		else
+			for i = 1, n do
+				local row = AcquireRow(i)
+				row.entryName = names[i]
+				row.text:SetText(names[i])
+				if selected == names[i] then row.sel:Show() else row.sel:Hide() end
+				row:ClearAllPoints()
+				if i == 1 then
+					row:SetPoint('TOPLEFT', listFrame, 'TOPLEFT', 0, 0)
+				else
+					row:SetPoint('TOPLEFT', rows[i - 1], 'BOTTOMLEFT', 0, -2)
+				end
+				row:SetPoint('RIGHT', listFrame, 'RIGHT', 0, 0)
+				row:Show()
+			end
+			for i = n + 1, #rows do rows[i]:Hide() end
+			listFrame:SetHeight(n * 18 + (n - 1) * 2)
 		end
-		for i = n + 1, #rows do rows[i]:Hide() end
-		listFrame:SetHeight(n * 18 + (n - 1) * 2)
+		if selected then delBtn:Enable() else delBtn:Disable() end
+		UpdateContentHeight()
 	end
-	if selected then delBtn:Enable() else delBtn:Disable() end
-	UpdateContentHeight()
+
+	local addBtn = CreateFrame('Button', nil, parent, 'UIPanelButtonTemplate')
+	addBtn:SetSize(64, 22)
+	addBtn:SetPoint('LEFT', nameBox, 'RIGHT', 8, 0)
+	addBtn:SetText('添加')
+	addBtn:SetScript('OnClick', function()
+		local name = Trim(nameBox:GetText())
+		if name == '' then return end
+		MyNavigateDB = MyNavigateDB or {}
+		MyNavigateDB[key] = MyNavigateDB[key] or {}
+		MyNavigateDB[key][name] = true
+		nameBox:SetText('')
+		nameBox:ClearFocus()
+		UpdateList()
+		RefreshCursor()
+	end)
+
+	local removeBtn = CreateFrame('Button', nil, parent, 'UIPanelButtonTemplate')
+	removeBtn:SetSize(64, 22)
+	removeBtn:SetPoint('LEFT', addBtn, 'RIGHT', 6, 0)
+	removeBtn:SetText('移除')
+	removeBtn:SetScript('OnClick', function()
+		local name = Trim(nameBox:GetText())
+		if name == '' or not (MyNavigateDB and MyNavigateDB[key]) then return end
+		MyNavigateDB[key][name] = nil
+		nameBox:SetText('')
+		nameBox:ClearFocus()
+		UpdateList()
+		RefreshCursor()
+	end)
+
+	local clearBtn = CreateFrame('Button', nil, parent, 'UIPanelButtonTemplate')
+	clearBtn:SetSize(64, 22)
+	clearBtn:SetPoint('LEFT', removeBtn, 'RIGHT', 6, 0)
+	clearBtn:SetText('清空')
+	clearBtn:SetScript('OnClick', function()
+		MyNavigateDB = MyNavigateDB or {}
+		MyNavigateDB[key] = {}
+		selected = nil
+		UpdateList()
+		RefreshCursor()
+	end)
+
+	-- 删除选中：移除列表中选中的条目
+	delBtn:SetScript('OnClick', function()
+		if not selected or not (MyNavigateDB and MyNavigateDB[key]) then return end
+		MyNavigateDB[key][selected] = nil
+		selected = nil
+		UpdateList()
+		RefreshCursor()
+	end)
+
+	-- 在输入框里回车 = 添加
+	nameBox:SetScript('OnEnterPressed', function(self)
+		addBtn:GetScript('OnClick')(addBtn)
+		self:ClearFocus()
+	end)
+
+	return { listFrame = listFrame, update = UpdateList }
 end
 
-local function RefreshCursor() ns.Cursor:Refresh() end
+-- 自定义白名单
+local wlSection = CreateListSection(content, kbScrollUp, {
+	key = 'extra',
+	title = '导航白名单',
+	listLabel = '当前自定义白名单：',
+	hint = '输入窗口名即可让它成为导航目标（用 /fstack 查看名字，内置白名单已覆盖常见窗口）。',
+	emptyText = '（暂无，可在上方输入后点「添加」）',
+})
+lastListFrame = wlSection.listFrame
 
-local addBtn = CreateFrame('Button', nil, content, 'UIPanelButtonTemplate')
-addBtn:SetSize(64, 22)
-addBtn:SetPoint('LEFT', nameBox, 'RIGHT', 8, 0)
-addBtn:SetText('添加')
-addBtn:SetScript('OnClick', function()
-	local name = Trim(nameBox:GetText())
-	if name == '' then return end
-	MyNavigateDB = MyNavigateDB or {}
-	MyNavigateDB.extra = MyNavigateDB.extra or {}
-	MyNavigateDB.extra[name] = true
-	nameBox:SetText('')
-	nameBox:ClearFocus()
-	UpdateList()
-	RefreshCursor()
-end)
-
-local removeBtn = CreateFrame('Button', nil, content, 'UIPanelButtonTemplate')
-removeBtn:SetSize(64, 22)
-removeBtn:SetPoint('LEFT', addBtn, 'RIGHT', 6, 0)
-removeBtn:SetText('移除')
-removeBtn:SetScript('OnClick', function()
-	local name = Trim(nameBox:GetText())
-	if name == '' or not (MyNavigateDB and MyNavigateDB.extra) then return end
-	MyNavigateDB.extra[name] = nil
-	nameBox:SetText('')
-	nameBox:ClearFocus()
-	UpdateList()
-	RefreshCursor()
-end)
-
-local clearBtn = CreateFrame('Button', nil, content, 'UIPanelButtonTemplate')
-clearBtn:SetSize(64, 22)
-clearBtn:SetPoint('LEFT', removeBtn, 'RIGHT', 6, 0)
-clearBtn:SetText('清空')
-clearBtn:SetScript('OnClick', function()
-	MyNavigateDB = MyNavigateDB or {}
-	MyNavigateDB.extra = {}
-	selected = nil
-	UpdateList()
-	RefreshCursor()
-end)
-
--- 删除选中：移除列表中选中的条目
-delBtn:SetScript('OnClick', function()
-	if not selected or not (MyNavigateDB and MyNavigateDB.extra) then return end
-	MyNavigateDB.extra[selected] = nil
-	selected = nil
-	UpdateList()
-	RefreshCursor()
-end)
-
--- 在输入框里回车 = 添加
-nameBox:SetScript('OnEnterPressed', function(self)
-	addBtn:GetScript('OnClick')(addBtn)
-	self:ClearFocus()
-end)
+-- 自定义黑名单：优先级高于白名单，用来彻底排除某些窗口
+local blSection = CreateListSection(content, wlSection.listFrame, {
+	key = 'black',
+	title = '导航黑名单',
+	listLabel = '当前自定义黑名单：',
+	hint = '输入窗口名即可把它排除在导航之外（也可用 /mynav unpick 鼠标选取，优先级高于白名单）。',
+	emptyText = '（暂无，可在上方输入后点「添加」）',
+})
+lastListFrame = blSection.listFrame
 
 -- 滚动帧尺寸变化时（面板拉伸 / 分辨率变化）重算内容宽度与高度
 scroll:SetScript('OnSizeChanged', function(self, width)
 	content:SetWidth(width)
-	listFrame:SetWidth(width - 16)
+	wlSection.listFrame:SetWidth(width - 16)
+	blSection.listFrame:SetWidth(width - 16)
 	UpdateContentHeight()
 end)
 
@@ -398,7 +428,8 @@ panel:SetScript('OnShow', function()
 	MyNavigateDB = MyNavigateDB or {}
 	-- 内容宽度跟随滚动帧，滚动条回到顶部
 	content:SetWidth(scroll:GetWidth())
-	listFrame:SetWidth(scroll:GetWidth() - 16)
+	wlSection.listFrame:SetWidth(scroll:GetWidth() - 16)
+	blSection.listFrame:SetWidth(scroll:GetWidth() - 16)
 	scroll:SetVerticalScroll(0)
 	cbEnabled:SetChecked(MyNavigateDB.enabled ~= false)
 	cbExclusive:SetChecked(MyNavigateDB.exclusive ~= false)
@@ -407,7 +438,8 @@ panel:SetScript('OnShow', function()
 	for i = 1, #keyButtons do
 		keyButtons[i].btn:SetText(ns.GetKey(keyButtons[i].action))
 	end
-	UpdateList()
+	wlSection.update()
+	blSection.update()
 end)
 
 if InterfaceOptions_AddCategory then
