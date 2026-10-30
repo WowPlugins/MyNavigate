@@ -14,7 +14,7 @@ local NL = string.char(10)   -- 提示框每行之间的换行符
 
 local BORDER_TEXTURE = 'Interface\\Buttons\\WHITE8X8'
 local BORDER_COLOR = { 1, 0.88, 0.1 }   -- 金色
-local BORDER_PAD = 4      -- 边框内沿距节点边缘的像素
+local BORDER_PAD = 2      -- 边框内沿距可见内容边缘的像素
 local BORDER_THICK = 2    -- 边框粗细
 
 local Cursor = CreateFrame('Frame', 'MyNavigateCursor', UIParent)
@@ -195,28 +195,184 @@ function Cursor:GetActionText(node)
 	return table.concat(lines, NL)
 end
 
+-- 金框贴合可见内容：先算出每块可见贴图“实际显示”的矩形。
+-- 注意：3.3.5 里 Texture:GetWidth()/GetHeight() 返回的是贴图文件的原始尺寸，
+-- 不是拉伸后的大小，直接用会得到又大又歪的框；这里按锚点位置换算出真实显示范围。
+local MAX_REGION_DEPTH = 3
+
+local ANCHOR_FRACTION = {
+	TOPLEFT = { 0, 1 }, TOPRIGHT = { 1, 1 }, BOTTOMLEFT = { 0, 0 }, BOTTOMRIGHT = { 1, 0 },
+	TOP = { 0.5, 1 }, BOTTOM = { 0.5, 0 }, LEFT = { 0, 0.5 }, RIGHT = { 1, 0.5 },
+	CENTER = { 0.5, 0.5 },
+}
+
+local function GetTextureRect(tex)
+	if not (tex.GetNumPoints and tex.GetPoint) then return nil end
+	local count = tex:GetNumPoints()
+	-- 只有一个锚点的贴图拿不到可靠尺寸，直接放弃
+	if count < 2 then return nil end
+	local l, b, r, t
+	for i = 1, count do
+		local _, target, targetPoint, x, y = tex:GetPoint(i)
+		if not target or not target.GetLeft then return nil end
+		-- 贴图锚在另一张贴图上时同样拿不到尺寸
+		if target.GetObjectType and target:GetObjectType() == 'Texture' then return nil end
+		local tl, tb, tw, th = target:GetLeft(), target:GetBottom(), target:GetWidth(), target:GetHeight()
+		if not (tl and tb and tw and th and tw > 0 and th > 0) then return nil end
+		local frac = ANCHOR_FRACTION[targetPoint or 'CENTER'] or ANCHOR_FRACTION.CENTER
+		local ax = tl + tw * frac[1] + (x or 0)
+		local ay = tb + th * frac[2] + (y or 0)
+		l = l and math.min(l, ax) or ax
+		b = b and math.min(b, ay) or ay
+		r = r and math.max(r, ax) or ax
+		t = t and math.max(t, ay) or ay
+	end
+	if not l then return nil end
+	return l, b, r - l, t - b
+end
+
+local function CollectTextures(frame, depth, out)
+	for _, region in ipairs({ frame:GetRegions() }) do
+		if region.GetTexture and region.IsShown and region:IsShown()
+			and (not region.GetAlpha or region:GetAlpha() > 0.01) then
+			local l, b, w, h = GetTextureRect(region)
+			if l and w and h and w > 1 and h > 1 then
+				out[#out + 1] = { tex = region, l = l, b = b, w = w, h = h, file = region:GetTexture() }
+			end
+		end
+	end
+	if depth > 0 then
+		for _, child in ipairs({ frame:GetChildren() }) do
+			if child.IsShown and child:IsShown() then
+				CollectTextures(child, depth - 1, out)
+			end
+		end
+	end
+end
+
+local function GetContentInsets(node)
+	-- EditBox / Slider 没有“美术贴图”的概念，框住整个控件才是正确表现；
+	-- 其余控件（含包着美术的自定义点击帧）都尝试贴合
+	local object = node.GetObjectType and node:GetObjectType()
+	if object == 'EditBox' or object == 'Slider' then return nil end
+
+	local nl, nb, nw, nh = node:GetLeft(), node:GetBottom(), node:GetWidth(), node:GetHeight()
+	if not (nl and nb and nw and nh and nw > 0 and nh > 0) then return nil end
+
+	local textures = {}
+	CollectTextures(node, MAX_REGION_DEPTH, textures)
+	-- normal texture 不一定出现在 GetRegions() 里，单独补一份
+	local normal = node.GetNormalTexture and node:GetNormalTexture()
+	if normal and normal.IsShown and normal:IsShown() and (not normal.GetAlpha or normal:GetAlpha() > 0.01) then
+		local l, b, w, h = GetTextureRect(normal)
+		if l and w and h and w > 1 and h > 1 then
+			local dup = false
+			for _, c in ipairs(textures) do if c.tex == normal then dup = true break end end
+			if not dup then
+				textures[#textures + 1] = { tex = normal, l = l, b = b, w = w, h = h, file = normal:GetTexture() }
+			end
+		end
+	end
+
+	-- 只考虑占控件 35% 以上的贴图，避免框住图标、文字这类局部；
+	-- 在候选里取面积最小的那块，通常是真正贴合按钮美术的那张
+	local nodeArea = nw * nh
+	local chosen, chosenArea
+	for _, c in ipairs(textures) do
+		local area = c.w * c.h
+		if area >= nodeArea * 0.35 and area <= nodeArea * 1.1 then
+			if not chosenArea or area < chosenArea then
+				chosen, chosenArea = c, area
+			end
+		end
+	end
+
+	local function DebugFit(il, ib, ir, it)
+		if not (MyNavigateDB and MyNavigateDB.debug) then return end
+		local info = chosen and string.format('%.0f,%.0f %.0fx%.0f', chosen.l, chosen.b, chosen.w, chosen.h) or '-'
+		print(string.format('MyNavigate 金框 %s (%s) 控件=%.0f,%.0f %.0fx%.0f 候选=%d 选中=%s 内缩=%s/%s/%s/%s',
+			node:GetName() or '(无名)', object or '?', nl, nb, nw, nh, #textures, info,
+			il and string.format('%.0f', il) or '-', ib and string.format('%.0f', ib) or '-',
+			ir and string.format('%.0f', ir) or '-', it and string.format('%.0f', it) or '-'))
+	end
+
+	if not chosen then
+		DebugFit()
+		return nil
+	end
+
+	-- 同一张图被切成左/中/右多块时把它们合并，恢复完整美术
+	local l, b, r, t = chosen.l, chosen.b, chosen.l + chosen.w, chosen.b + chosen.h
+	local file = chosen.file
+	if file then
+		for _, c in ipairs(textures) do
+			if c ~= chosen and c.file == file then
+				l = math.min(l, c.l); b = math.min(b, c.b)
+				r = math.max(r, c.l + c.w); t = math.max(t, c.b + c.h)
+			end
+		end
+	end
+
+	-- 与控件矩形求交，避免发光 / 阴影贴图把框撑大
+	l, b = math.max(l, nl), math.max(b, nb)
+	r, t = math.min(r, nl + nw), math.min(t, nb + nh)
+
+	local il, ib, ir, it
+	if r - l >= nw - 1 and t - b >= nh - 1 and nw / nh >= 3 then
+		-- 贴图和控件完全重合：说明按钮的透明留白是“烤”在贴图文件里的，
+		-- API 读不到实际像素边界。对横向长条按钮按比例内缩一圈，
+		-- 否则金框会沿着看不见的贴图边缘跑，看起来比按钮大很多。
+		il = math.min(nw * 0.07, 12)
+		ir = il
+		ib = math.min(nh * 0.14, 6)
+		it = ib
+	else
+		-- 内容太小（例如只剩一段文字）时不采用，免得框出一个奇怪的局部
+		if r - l < nw * 0.3 or t - b < nh * 0.3 then
+			DebugFit()
+			return nil
+		end
+		il, ib, ir, it = l - nl, b - nb, (nl + nw) - r, (nb + nh) - t
+	end
+	DebugFit(il, ib, ir, it)
+	return il, ib, ir, it
+end
+
+-- 同一个节点只在切换时计算一次；滚动时节点矩形变化但内缩量不变
+local insetNode, insetL, insetB, insetR, insetT
+
+function Cursor:GetInsets(node)
+	if node ~= insetNode then
+		insetNode = node
+		insetL, insetB, insetR, insetT = GetContentInsets(node)
+	end
+	return insetL, insetB, insetR, insetT
+end
+
 function Cursor:SetHighlight(node)
 	local pad, thick = BORDER_PAD, BORDER_THICK
 	local outer = pad + thick
-	-- 上边：横贯全宽，内沿在节点上边上方 pad 处
+	local il, ib, ir, it = self:GetInsets(node)
+	il, ib, ir, it = il or 0, ib or 0, ir or 0, it or 0
+	-- 上边：横贯内容全宽，内沿在内容上边上方 pad 处
 	edgeTop:ClearAllPoints()
-	edgeTop:SetPoint('TOPLEFT', node, 'TOPLEFT', -outer, outer)
-	edgeTop:SetPoint('TOPRIGHT', node, 'TOPRIGHT', outer, outer)
+	edgeTop:SetPoint('TOPLEFT', node, 'TOPLEFT', il - outer, outer - it)
+	edgeTop:SetPoint('TOPRIGHT', node, 'TOPRIGHT', outer - ir, outer - it)
 	edgeTop:SetHeight(thick)
 	-- 下边
 	edgeBottom:ClearAllPoints()
-	edgeBottom:SetPoint('BOTTOMLEFT', node, 'BOTTOMLEFT', -outer, -outer)
-	edgeBottom:SetPoint('BOTTOMRIGHT', node, 'BOTTOMRIGHT', outer, -outer)
+	edgeBottom:SetPoint('BOTTOMLEFT', node, 'BOTTOMLEFT', il - outer, ib - outer)
+	edgeBottom:SetPoint('BOTTOMRIGHT', node, 'BOTTOMRIGHT', outer - ir, ib - outer)
 	edgeBottom:SetHeight(thick)
 	-- 左边：竖直，夹在上下两条之间
 	edgeLeft:ClearAllPoints()
-	edgeLeft:SetPoint('TOPLEFT', node, 'TOPLEFT', -outer, pad)
-	edgeLeft:SetPoint('BOTTOMLEFT', node, 'BOTTOMLEFT', -outer, -pad)
+	edgeLeft:SetPoint('TOPLEFT', node, 'TOPLEFT', il - outer, pad - it)
+	edgeLeft:SetPoint('BOTTOMLEFT', node, 'BOTTOMLEFT', il - outer, ib - pad)
 	edgeLeft:SetWidth(thick)
 	-- 右边
 	edgeRight:ClearAllPoints()
-	edgeRight:SetPoint('TOPRIGHT', node, 'TOPRIGHT', outer, pad)
-	edgeRight:SetPoint('BOTTOMRIGHT', node, 'BOTTOMRIGHT', outer, -pad)
+	edgeRight:SetPoint('TOPRIGHT', node, 'TOPRIGHT', outer - ir, pad - it)
+	edgeRight:SetPoint('BOTTOMRIGHT', node, 'BOTTOMRIGHT', outer - ir, ib - pad)
 	edgeRight:SetWidth(thick)
 
 	edgeTop:Show()
@@ -227,9 +383,11 @@ end
 
 function Cursor:SetPosition(node)
 	self:SetHighlight(node)
+	local il, ib, ir, it = self:GetInsets(node)
+	il, ib, ir, it = il or 0, ib or 0, ir or 0, it or 0
 	self:ClearAllPoints()
-	self:SetPoint('CENTER', node, 'CENTER', 0, 0)
-	-- 提示框贴在节点右下角外侧（即金色边框的右下角），向右下展开，尺寸按文字自适应
+	self:SetPoint('CENTER', node, 'CENTER', (il - ir) / 2, (ib - it) / 2)
+	-- 提示框贴在可见内容右下角外侧（即金色边框的右下角），向右下展开，尺寸按文字自适应
 	--（与 SimpleCursor 一致）。点不动的节点属于提醒，即使关掉了常规提示也照样显示，
 	-- 避免按了没反应还以为插件坏了。
 	if MyNavigateDB and MyNavigateDB.hint == false and not IsUnclickable(node) then
@@ -239,7 +397,7 @@ function Cursor:SetPosition(node)
 		HintBox:SetWidth(HintText:GetStringWidth() + 16)
 		HintBox:SetHeight(HintText:GetStringHeight() + 16)
 		HintBox:ClearAllPoints()
-		HintBox:SetPoint('TOPLEFT', node, 'BOTTOMRIGHT', 4, -4)
+		HintBox:SetPoint('TOPLEFT', node, 'BOTTOMRIGHT', 4 - ir, ib - 4)
 		HintBox:Show()
 	end
 	self:Show()
