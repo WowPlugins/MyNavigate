@@ -29,7 +29,46 @@ title:SetText('MyNavigate 手柄导航设置')
 
 local desc = content:CreateFontString(nil, 'ARTWORK', 'GameFontHighlightSmall')
 desc:SetPoint('TOPLEFT', title, 'BOTTOMLEFT', 0, -8)
-desc:SetText('方向键在窗口内移动光标，ABXY 执行动作。下面可以开关功能、设置按键、维护窗口名单与按钮黑名单。')
+desc:SetText('方向键在窗口内移动光标，ABXY 执行动作。下面先列出常用命令，再是功能开关、按键设置与名单维护。')
+
+---------------------------------------------------------------------
+-- 命令说明：放在面板最前面，方便直接查用
+---------------------------------------------------------------------
+local cmdTitle = content:CreateFontString(nil, 'ARTWORK', 'GameFontNormalLarge')
+cmdTitle:SetPoint('TOPLEFT', desc, 'BOTTOMLEFT', 0, -18)
+cmdTitle:SetText('命令说明')
+
+local cmdHint = content:CreateFontString(nil, 'ARTWORK', 'GameFontHighlight')
+cmdHint:SetPoint('TOPLEFT', cmdTitle, 'BOTTOMLEFT', 0, -8)
+cmdHint:SetJustifyH('LEFT')
+cmdHint:SetText('在聊天框输入，不带参数输入 /mynav 会打开本面板。')
+
+local cmdText = content:CreateFontString(nil, 'ARTWORK', 'GameFontHighlightSmall')
+cmdText:SetPoint('TOPLEFT', cmdHint, 'BOTTOMLEFT', 0, -8)
+cmdText:SetJustifyH('LEFT')
+cmdText:SetText(table.concat({
+	ACCENT .. '面板与开关|r',
+	ACCENT .. '/mynav|r 或 ' .. ACCENT .. '/mynav config|r — 打开本设置面板',
+	ACCENT .. '/mynav on|r / ' .. ACCENT .. 'off|r — 开启 / 关闭导航（关闭会解绑按键）',
+	ACCENT .. '/mynav reset|r — 恢复插件接管前的原始按键绑定',
+	'',
+	ACCENT .. '窗口名单|r',
+	ACCENT .. '/mynav pick|r — 鼠标点选窗口，加入导航白名单',
+	ACCENT .. '/mynav unpick|r — 鼠标点选窗口，加入导航黑名单',
+	ACCENT .. '/mynav add|r / ' .. ACCENT .. 'remove|r <帧名> — 手动增删白名单',
+	ACCENT .. '/mynav block|r / ' .. ACCENT .. 'unblock|r <帧名> — 手动增删黑名单（优先于白名单）',
+	'',
+	ACCENT .. '按钮黑名单|r',
+	ACCENT .. '/mynav skip|r — 鼠标点选控件，导航时跳过它',
+	ACCENT .. '/mynav skip|r <标识> — 手动加入按钮黑名单',
+	ACCENT .. '/mynav unskip|r <标识> — 移出按钮黑名单',
+	'',
+	ACCENT .. '排查|r',
+	ACCENT .. '/mynav debug|r — 开关调试输出',
+	ACCENT .. '/mynav dump|r [' .. ACCENT .. '关键词|r] — 列出顶层帧，标注是否可导航',
+	ACCENT .. '/mynav nodes|r — 打印当前扫描到的导航节点',
+	ACCENT .. '/mynav tree|r <帧名> — 打印某个帧的子帧树',
+}, '\n'))
 
 ---------------------------------------------------------------------
 -- 复选框生成器（文字用自己创建的 FontString，兼容无名 checkbutton）
@@ -70,7 +109,7 @@ local cbEnabled = CreateCheck(content, '启用导航', 'enabled',
 			ns.Cursor:HideNode()
 		end
 	end)
-cbEnabled:SetPoint('TOPLEFT', desc, 'BOTTOMLEFT', 0, -16)
+cbEnabled:SetPoint('TOPLEFT', cmdText, 'BOTTOMLEFT', 0, -18)
 
 local cbExclusive = CreateCheck(content, '弹窗 / 下拉独占', 'exclusive',
 	'屏幕上出现弹窗或下拉菜单时，只导航它们，忽略其背后的窗口', function()
