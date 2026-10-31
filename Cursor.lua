@@ -14,8 +14,28 @@ local NL = string.char(10)   -- 提示框每行之间的换行符
 
 local BORDER_TEXTURE = 'Interface\\Buttons\\WHITE8X8'
 local BORDER_COLOR = { 1, 0.88, 0.1 }   -- 金色
-local BORDER_PAD = 2      -- 边框内沿距可见内容边缘的像素
-local BORDER_THICK = 2    -- 边框粗细
+
+-- 边框样式：三项都可在设置面板里调（存 MyNavigateDB.borderInset/borderThick/borderPad）。
+-- 每项是 { 最小值, 最大值, 默认值 }：
+--   inset：额外内缩（像素）。自动贴合仍然偏大时整体收紧，0~12
+--   thick：边框粗细，1~3
+--   pad  ：边框内沿与内容边缘的间距，0~4
+local BORDER_STYLE = {
+	inset = { 0, 12, 0 },
+	thick = { 1, 3, 2 },
+	pad   = { 0, 4, 2 },
+}
+ns.BORDER_STYLE = BORDER_STYLE
+
+local function Style(key)
+	local limits = BORDER_STYLE[key]
+	local value = MyNavigateDB and tonumber(MyNavigateDB['border' .. key:sub(1, 1):upper() .. key:sub(2)])
+	if not value then return limits[3] end
+	if value < limits[1] then return limits[1] end
+	if value > limits[2] then return limits[2] end
+	return value
+end
+ns.GetBorderStyle = Style
 
 local Cursor = CreateFrame('Frame', 'MyNavigateCursor', UIParent)
 Cursor:SetFrameStrata('TOOLTIP')
@@ -200,6 +220,13 @@ end
 -- 不是拉伸后的大小，直接用会得到又大又歪的框；这里按锚点位置换算出真实显示范围。
 local MAX_REGION_DEPTH = 3
 
+-- 候选贴图门槛：面积不超过节点的 110%，并且（占节点 20% 以上，或自身至少 24×12）。
+-- 原来是硬性 35%，页签 / 带透明留白的按钮经常刚好卡在门槛外，
+-- 一个候选都没有时就退回整块节点矩形，框看起来比控件大一大圈。
+local MIN_ART_AREA_RATIO = 0.20
+local MAX_ART_AREA_RATIO = 1.10
+local MIN_ART_W, MIN_ART_H = 24, 12
+
 local ANCHOR_FRACTION = {
 	TOPLEFT = { 0, 1 }, TOPRIGHT = { 1, 1 }, BOTTOMLEFT = { 0, 0 }, BOTTOMRIGHT = { 1, 0 },
 	TOP = { 0.5, 1 }, BOTTOM = { 0.5, 0 }, LEFT = { 0, 0.5 }, RIGHT = { 1, 0.5 },
@@ -231,23 +258,72 @@ local function GetTextureRect(tex)
 	return l, b, r - l, t - b
 end
 
-local function CollectTextures(frame, depth, out)
+local function CollectTextures(frame, depth, out, texts)
 	for _, region in ipairs({ frame:GetRegions() }) do
-		if region.GetTexture and region.IsShown and region:IsShown()
+		if region.IsShown and region:IsShown()
 			and (not region.GetAlpha or region:GetAlpha() > 0.01) then
-			local l, b, w, h = GetTextureRect(region)
-			if l and w and h and w > 1 and h > 1 then
-				out[#out + 1] = { tex = region, l = l, b = b, w = w, h = h, file = region:GetTexture() }
+			if region.GetTexture then
+				local l, b, w, h = GetTextureRect(region)
+				if l and w and h and w > 1 and h > 1 then
+					out[#out + 1] = { tex = region, l = l, b = b, w = w, h = h, file = region:GetTexture() }
+				end
+			elseif texts and region.GetText then
+				-- 文字也记一份：没有可用美术时（纯文字按钮 / 自定义面板）靠它收框
+				local text = region:GetText()
+				if text and text ~= '' then
+					local l, b, w, h = region:GetLeft(), region:GetBottom(), region:GetWidth(), region:GetHeight()
+					if l and b and w and h and w > 1 and h > 1 then
+						texts[#texts + 1] = { l = l, b = b, w = w, h = h }
+					end
+				end
 			end
 		end
 	end
 	if depth > 0 then
 		for _, child in ipairs({ frame:GetChildren() }) do
 			if child.IsShown and child:IsShown() then
-				CollectTextures(child, depth - 1, out)
+				CollectTextures(child, depth - 1, out, texts)
 			end
 		end
 	end
+end
+
+-- 两块同文件贴图是不是同一块美术的相邻切片：
+-- 横向拼接要求竖直方向重叠 ≥50%、水平间隙 ≤ max(4, 高度*0.1)，纵向同理。
+-- 原来按文件无条件合并，会把窗口另一侧的同名贴图也并进来，框被撑得很大。
+local function IsArtPiece(a, b)
+	local overlapX = math.min(a.l + a.w, b.l + b.w) - math.max(a.l, b.l)
+	local overlapY = math.min(a.b + a.h, b.b + b.h) - math.max(a.b, b.b)
+	local gapX = math.max(a.l - (b.l + b.w), b.l - (a.l + a.w), 0)
+	local gapY = math.max(a.b - (b.b + b.h), b.b - (a.b + a.h), 0)
+	if overlapY >= math.min(a.h, b.h) * 0.5 and gapX <= math.max(4, math.min(a.h, b.h) * 0.1) then
+		return true
+	end
+	if overlapX >= math.min(a.w, b.w) * 0.5 and gapY <= math.max(4, math.min(a.w, b.w) * 0.1) then
+		return true
+	end
+	return false
+end
+
+-- 没有可用美术时的内容矩形：可见文字 + 节点直接子帧里的可交互控件。
+-- 只看一层子帧，避免在大列表 / 滚动帧里遍历整棵子树。
+local function GetLooseContentRect(node, texts)
+	local l, b, r, t
+	local function Add(rl, rb, rw, rh)
+		if not (rl and rb and rw and rh and rw > 1 and rh > 1) then return end
+		l = l and math.min(l, rl) or rl
+		b = b and math.min(b, rb) or rb
+		r = r and math.max(r, rl + rw) or (rl + rw)
+		t = t and math.max(t, rb + rh) or (rb + rh)
+	end
+	for _, item in ipairs(texts or {}) do Add(item.l, item.b, item.w, item.h) end
+	for _, child in ipairs({ node:GetChildren() }) do
+		if child.IsShown and child:IsShown()
+			and Node:IsInteractive(child, child:GetObjectType()) then
+			Add(child:GetLeft(), child:GetBottom(), child:GetWidth(), child:GetHeight())
+		end
+	end
+	if l then return l, b, r, t end
 end
 
 local function GetContentInsets(node)
@@ -259,8 +335,8 @@ local function GetContentInsets(node)
 	local nl, nb, nw, nh = node:GetLeft(), node:GetBottom(), node:GetWidth(), node:GetHeight()
 	if not (nl and nb and nw and nh and nw > 0 and nh > 0) then return nil end
 
-	local textures = {}
-	CollectTextures(node, MAX_REGION_DEPTH, textures)
+	local textures, texts = {}, {}
+	CollectTextures(node, MAX_REGION_DEPTH, textures, texts)
 	-- normal texture 不一定出现在 GetRegions() 里，单独补一份
 	local normal = node.GetNormalTexture and node:GetNormalTexture()
 	if normal and normal.IsShown and normal:IsShown() and (not normal.GetAlpha or normal:GetAlpha() > 0.01) then
@@ -274,71 +350,97 @@ local function GetContentInsets(node)
 		end
 	end
 
-	-- 只考虑占控件 35% 以上的贴图，避免框住图标、文字这类局部；
-	-- 在候选里取面积最小的那块，通常是真正贴合按钮美术的那张
+	-- 先按严格门槛（占节点 35% 以上）挑，挑不到再用放宽门槛（≥20% 或 ≥24×12）。
+	-- 放宽只作兜底：页签 / 带透明留白的按钮经常一个候选都没有，
+	-- 但也不能让按钮中间的小图标在第一步就抢走大块美术。
+	-- 两步里都优先取覆盖控件中心的那块（边缘花纹 / 高光通常不在中心），
+	-- 再在同样居中的候选里取面积最小的那块。
 	local nodeArea = nw * nh
-	local chosen, chosenArea
-	for _, c in ipairs(textures) do
-		local area = c.w * c.h
-		if area >= nodeArea * 0.35 and area <= nodeArea * 1.1 then
-			if not chosenArea or area < chosenArea then
-				chosen, chosenArea = c, area
+	local nodeCX, nodeCY = nl + nw * 0.5, nb + nh * 0.5
+	local function PickCandidate(minRatio, allowSmall)
+		local picked, pickedArea, pickedCentered
+		for _, c in ipairs(textures) do
+			local area = c.w * c.h
+			local bigEnough = area >= nodeArea * minRatio
+				or (allowSmall and c.w >= MIN_ART_W and c.h >= MIN_ART_H)
+			if bigEnough and area <= nodeArea * MAX_ART_AREA_RATIO then
+				local centered = c.l <= nodeCX and c.l + c.w >= nodeCX
+					and c.b <= nodeCY and c.b + c.h >= nodeCY
+				if not picked
+					or (centered and not pickedCentered)
+					or (centered == pickedCentered and area < pickedArea) then
+					picked, pickedArea, pickedCentered = c, area, centered
+				end
 			end
 		end
+		return picked
 	end
+	local chosen = PickCandidate(0.35) or PickCandidate(MIN_ART_AREA_RATIO, true)
 
 	local function DebugFit(il, ib, ir, it)
 		if not (MyNavigateDB and MyNavigateDB.debug) then return end
 		local info = chosen and string.format('%.0f,%.0f %.0fx%.0f', chosen.l, chosen.b, chosen.w, chosen.h) or '-'
-		print(string.format('MyNavigate 金框 %s (%s) 控件=%.0f,%.0f %.0fx%.0f 候选=%d 选中=%s 内缩=%s/%s/%s/%s',
-			node:GetName() or '(无名)', object or '?', nl, nb, nw, nh, #textures, info,
+		print(string.format('MyNavigate 金框 %s (%s) 控件=%.0f,%.0f %.0fx%.0f 候选=%d 文字=%d 选中=%s 内缩=%s/%s/%s/%s',
+			node:GetName() or '(无名)', object or '?', nl, nb, nw, nh, #textures, #texts, info,
 			il and string.format('%.0f', il) or '-', ib and string.format('%.0f', ib) or '-',
 			ir and string.format('%.0f', ir) or '-', it and string.format('%.0f', it) or '-'))
 	end
 
-	if not chosen then
-		DebugFit()
-		return nil
-	end
-
-	-- 同一张图被切成左/中/右多块时把它们合并，恢复完整美术
-	local l, b, r, t = chosen.l, chosen.b, chosen.l + chosen.w, chosen.b + chosen.h
-	local file = chosen.file
-	if file then
-		for _, c in ipairs(textures) do
-			if c ~= chosen and c.file == file then
-				l = math.min(l, c.l); b = math.min(b, c.b)
-				r = math.max(r, c.l + c.w); t = math.max(t, c.b + c.h)
+	-- 内容矩形：优先用选中的美术；没有美术时用可见文字 + 直接子控件拼一块，
+	-- 都没有才退回节点矩形（后面统一按比例内缩）
+	local l, b, r, t
+	if chosen then
+		l, b, r, t = chosen.l, chosen.b, chosen.l + chosen.w, chosen.b + chosen.h
+		-- 同一张图被切成左/中/右多块时把它们合并，恢复完整美术；
+		-- 只合并同文件且紧挨着的切片，避免把窗口另一侧的同名贴图也并进来
+		local file = chosen.file
+		if file then
+			for _, c in ipairs(textures) do
+				if c ~= chosen and c.file == file and IsArtPiece(chosen, c) then
+					l = math.min(l, c.l); b = math.min(b, c.b)
+					r = math.max(r, c.l + c.w); t = math.max(t, c.b + c.h)
+				end
 			end
 		end
+	else
+		l, b, r, t = GetLooseContentRect(node, texts)
+		if not l then l, b, r, t = nl, nb, nl + nw, nb + nh end
 	end
 
 	-- 与控件矩形求交，避免发光 / 阴影贴图把框撑大
 	l, b = math.max(l, nl), math.max(b, nb)
 	r, t = math.min(r, nl + nw), math.min(t, nb + nh)
 
+	-- 内容太小（例如只剩一段文字）时不采用，免得框出一个奇怪的局部；
+	-- 没有美术可用时（chosen 为空）退回整块节点，交给下面的比例内缩处理
+	if r - l < nw * 0.3 or t - b < nh * 0.3 then
+		DebugFit()
+		if chosen then return nil end
+		l, b, r, t = nl, nb, nl + nw, nb + nh
+	end
+
 	local il, ib, ir, it
-	if r - l >= nw - 1 and t - b >= nh - 1 and nw / nh >= 3 then
-		-- 贴图和控件完全重合：说明按钮的透明留白是“烤”在贴图文件里的，
-		-- API 读不到实际像素边界。对横向长条按钮按比例内缩一圈，
-		-- 否则金框会沿着看不见的贴图边缘跑，看起来比按钮大很多。
-		il = math.min(nw * 0.07, 12)
+	if r - l >= nw - 1 and t - b >= nh - 1 then
+		-- 美术（或整块节点）和控件完全重合：透明留白是“烤”在贴图文件里的，
+		-- API 读不到实际像素边界。按比例内缩一圈，否则金框会沿着看不见的贴图边缘跑。
+		-- 原来只对宽高比 ≥3 的横条生效，页签这类比例 ≈2 的控件会漏掉，
+		-- 框就贴到节点外沿、看起来比按钮大很多
+		il = math.min(math.max(nw * 0.055, 2), 10)
 		ir = il
-		ib = math.min(nh * 0.14, 6)
+		ib = math.min(math.max(nh * 0.13, 2), 8)
 		it = ib
+		-- 内缩不能吃掉整块内容
+		il = math.min(il, nw * 0.25); ir = il
+		ib = math.min(ib, nh * 0.25); it = ib
 	else
-		-- 内容太小（例如只剩一段文字）时不采用，免得框出一个奇怪的局部
-		if r - l < nw * 0.3 or t - b < nh * 0.3 then
-			DebugFit()
-			return nil
-		end
 		il, ib, ir, it = l - nl, b - nb, (nl + nw) - r, (nb + nh) - t
 	end
 	DebugFit(il, ib, ir, it)
 	return il, ib, ir, it
 end
 
--- 同一个节点只在切换时计算一次；滚动时节点矩形变化但内缩量不变
+-- 同一个节点只在切换时计算一次；滚动时节点矩形变化但内缩量不变。
+-- 设置里的「额外内缩」不参与缓存，每次取值时现算，这样拖滑块能立刻生效。
 local insetNode, insetL, insetB, insetR, insetT
 
 function Cursor:GetInsets(node)
@@ -346,11 +448,21 @@ function Cursor:GetInsets(node)
 		insetNode = node
 		insetL, insetB, insetR, insetT = GetContentInsets(node)
 	end
-	return insetL, insetB, insetR, insetT
+	local il, ib, ir, it = insetL or 0, insetB or 0, insetR or 0, insetT or 0
+	local extra = Style('inset')
+	if extra > 0 then
+		local nw, nh = node:GetWidth(), node:GetHeight()
+		if nw and nh and nw > 0 and nh > 0 then
+			local mx, my = nw * 0.45, nh * 0.45
+			il, ir = math.min(il + extra, mx), math.min(ir + extra, mx)
+			ib, it = math.min(ib + extra, my), math.min(it + extra, my)
+		end
+	end
+	return il, ib, ir, it
 end
 
 function Cursor:SetHighlight(node)
-	local pad, thick = BORDER_PAD, BORDER_THICK
+	local pad, thick = Style('pad'), Style('thick')
 	local outer = pad + thick
 	local il, ib, ir, it = self:GetInsets(node)
 	il, ib, ir, it = il or 0, ib or 0, ir or 0, it or 0
@@ -414,6 +526,12 @@ function Cursor:SetNode(node, object, super)
 	lastSetTime = GetTime()
 	-- 把动作键重绑成「安全点击该节点」，由暴雪安全框架执行点击
 	if ns.SetActionNode then ns.SetActionNode(node) end
+end
+
+-- 设置面板改了边框样式后调用：只重画当前节点的框，不重扫窗口、不触发滚动
+function Cursor:Restyle()
+	local node = current and current.node
+	if node and node:IsVisible() then self:SetPosition(node) end
 end
 
 function Cursor:HideNode()

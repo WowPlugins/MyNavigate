@@ -23,52 +23,35 @@ content:SetWidth(460)
 content:SetHeight(500)
 scroll:SetScrollChild(content)
 
+---------------------------------------------------------------------
+-- 长文本自动换行：3.3.5 的 FontString 只在空格处换行，中文长句会直接顶出
+-- 面板右边被裁掉，所以统一限制宽度并开启 SetNonSpaceWrap。
+-- 宽度在面板尺寸变化时同步更新，避免换分辨率后又被截断。
+---------------------------------------------------------------------
+local wrapTexts = {}
+local function UpdateWrapWidths(width)
+	for i = 1, #wrapTexts do
+		wrapTexts[i]:SetWidth(math.max(120, width - 24))
+	end
+end
+
+local function WrappedText(anchor, template, text, gap)
+	local fs = content:CreateFontString(nil, 'ARTWORK', template or 'GameFontHighlight')
+	fs:SetPoint('TOPLEFT', anchor, 'BOTTOMLEFT', 0, gap or -8)
+	fs:SetJustifyH('LEFT')
+	fs:SetNonSpaceWrap(true)
+	fs:SetWidth(436)
+	fs:SetText(text)
+	wrapTexts[#wrapTexts + 1] = fs
+	return fs
+end
+
 local title = content:CreateFontString(nil, 'ARTWORK', 'GameFontNormalLarge')
 title:SetPoint('TOPLEFT', 16, -16)
 title:SetText('MyNavigate 手柄导航设置')
 
-local desc = content:CreateFontString(nil, 'ARTWORK', 'GameFontHighlightSmall')
-desc:SetPoint('TOPLEFT', title, 'BOTTOMLEFT', 0, -8)
-desc:SetText('方向键在窗口内移动光标，ABXY 执行动作。下面先列出常用命令，再是功能开关、按键设置与名单维护。')
-
----------------------------------------------------------------------
--- 命令说明：放在面板最前面，方便直接查用
----------------------------------------------------------------------
-local cmdTitle = content:CreateFontString(nil, 'ARTWORK', 'GameFontNormalLarge')
-cmdTitle:SetPoint('TOPLEFT', desc, 'BOTTOMLEFT', 0, -18)
-cmdTitle:SetText('命令说明')
-
-local cmdHint = content:CreateFontString(nil, 'ARTWORK', 'GameFontHighlight')
-cmdHint:SetPoint('TOPLEFT', cmdTitle, 'BOTTOMLEFT', 0, -8)
-cmdHint:SetJustifyH('LEFT')
-cmdHint:SetText('在聊天框输入，不带参数输入 /mynav 会打开本面板。')
-
-local cmdText = content:CreateFontString(nil, 'ARTWORK', 'GameFontHighlightSmall')
-cmdText:SetPoint('TOPLEFT', cmdHint, 'BOTTOMLEFT', 0, -8)
-cmdText:SetJustifyH('LEFT')
-cmdText:SetText(table.concat({
-	ACCENT .. '面板与开关|r',
-	ACCENT .. '/mynav|r 或 ' .. ACCENT .. '/mynav config|r — 打开本设置面板',
-	ACCENT .. '/mynav on|r / ' .. ACCENT .. 'off|r — 开启 / 关闭导航（关闭会解绑按键）',
-	ACCENT .. '/mynav reset|r — 恢复插件接管前的原始按键绑定',
-	'',
-	ACCENT .. '窗口名单|r',
-	ACCENT .. '/mynav pick|r — 鼠标点选窗口，加入导航白名单',
-	ACCENT .. '/mynav unpick|r — 鼠标点选窗口，加入导航黑名单',
-	ACCENT .. '/mynav add|r / ' .. ACCENT .. 'remove|r <帧名> — 手动增删白名单',
-	ACCENT .. '/mynav block|r / ' .. ACCENT .. 'unblock|r <帧名> — 手动增删黑名单（优先于白名单）',
-	'',
-	ACCENT .. '按钮黑名单|r',
-	ACCENT .. '/mynav skip|r — 鼠标点选控件，导航时跳过它',
-	ACCENT .. '/mynav skip|r <标识> — 手动加入按钮黑名单',
-	ACCENT .. '/mynav unskip|r <标识> — 移出按钮黑名单',
-	'',
-	ACCENT .. '排查|r',
-	ACCENT .. '/mynav debug|r — 开关调试输出',
-	ACCENT .. '/mynav dump|r [' .. ACCENT .. '关键词|r] — 列出顶层帧，标注是否可导航',
-	ACCENT .. '/mynav nodes|r — 打印当前扫描到的导航节点',
-	ACCENT .. '/mynav tree|r <帧名> — 打印某个帧的子帧树',
-}, '\n'))
+local desc = WrappedText(title, 'GameFontHighlightSmall',
+	'方向键在窗口内移动光标，ABXY 执行动作。下面是功能开关、按键设置与名单维护，常用命令汇总在面板最后。', -8)
 
 ---------------------------------------------------------------------
 -- 复选框生成器（文字用自己创建的 FontString，兼容无名 checkbutton）
@@ -109,7 +92,7 @@ local cbEnabled = CreateCheck(content, '启用导航', 'enabled',
 			ns.Cursor:HideNode()
 		end
 	end)
-cbEnabled:SetPoint('TOPLEFT', cmdText, 'BOTTOMLEFT', 0, -18)
+cbEnabled:SetPoint('TOPLEFT', desc, 'BOTTOMLEFT', 0, -18)
 
 local cbExclusive = CreateCheck(content, '弹窗 / 下拉独占', 'exclusive',
 	'屏幕上出现弹窗或下拉菜单时，只导航它们，忽略其背后的窗口', function()
@@ -133,16 +116,70 @@ local cbDebug = CreateCheck(content, '调试输出', 'debug',
 cbDebug:SetPoint('TOPLEFT', cbHint, 'BOTTOMLEFT', 0, -6)
 
 ---------------------------------------------------------------------
+-- 边框样式：自动贴合仍然偏大时，用这三项手动收紧
+---------------------------------------------------------------------
+local styleTitle = content:CreateFontString(nil, 'ARTWORK', 'GameFontNormalLarge')
+styleTitle:SetPoint('TOPLEFT', cbDebug, 'BOTTOMLEFT', 0, -20)
+styleTitle:SetText('边框样式')
+
+local styleHint = WrappedText(styleTitle, 'GameFontHighlightSmall',
+	'金框默认自动贴合控件美术，下面三项用来手动微调。\n'
+	.. '额外内缩：自动贴合后仍偏大时整体往里收；页签类 4~7、大面板/列表 6~8 通常够用。\n'
+	.. '边框粗细：金框线本身的厚度，一般保持 2，小控件显得太粗时调到 1。\n'
+	.. '边框外扩：金框与美术之间的空隙，0 是贴着美术边缘，想更紧凑用 0~1。\n'
+	.. '三项都是全局设置，改完关掉面板、回到原窗口再导航即可看到效果。\n'
+	.. '滑块需用鼠标拖动；数值改动立即保存，/reload 后仍然生效。', -8)
+
+-- 三项都存 MyNavigateDB.border*，拖完立即重画当前的金框（不重扫窗口）
+local styleSliders = {}
+
+local function CreateStyleSlider(anchor, key, labelText, gap)
+	local limits = ns.BORDER_STYLE[key]
+	local name = 'MyNavigateStyle' .. key:sub(1, 1):upper() .. key:sub(2)
+	local slider = CreateFrame('Slider', name, content, 'OptionsSliderTemplate')
+	slider:SetPoint('TOPLEFT', anchor, 'BOTTOMLEFT', 0, gap)
+	slider:SetWidth(200)
+	slider:SetMinMaxValues(limits[1], limits[2])
+	slider:SetValueStep(1)
+
+	-- OptionsSliderTemplate 自带 Text / Low / High 三个 FontString（用名字取）
+	local text = _G[name .. 'Text']
+	if text then text:SetText(labelText) end
+	local low = _G[name .. 'Low']
+	if low then low:SetText(tostring(limits[1])) end
+	local high = _G[name .. 'High']
+	if high then high:SetText(tostring(limits[2])) end
+
+	local value = content:CreateFontString(nil, 'ARTWORK', 'GameFontHighlightSmall')
+	value:SetPoint('LEFT', slider, 'RIGHT', 12, 0)
+
+	slider.styleKey = key
+	slider.dbfield = 'border' .. key:sub(1, 1):upper() .. key:sub(2)
+	slider.valueText = value
+	slider:SetScript('OnValueChanged', function(self, v)
+		v = math.floor((v or 0) + 0.5)
+		MyNavigateDB = MyNavigateDB or {}
+		MyNavigateDB[self.dbfield] = v
+		value:SetText(tostring(v) .. ' px')
+		if ns.Cursor and ns.Cursor.Restyle then ns.Cursor:Restyle() end
+	end)
+	styleSliders[#styleSliders + 1] = slider
+	return slider
+end
+
+local sliderInset = CreateStyleSlider(styleHint, 'inset', '额外内缩', -34)
+local sliderThick = CreateStyleSlider(sliderInset, 'thick', '边框粗细', -42)
+local sliderPad = CreateStyleSlider(sliderThick, 'pad', '边框外扩', -42)
+
+---------------------------------------------------------------------
 -- 按键设置：捕获手柄物理键，默认值为当前值
 ---------------------------------------------------------------------
 local keyTitle = content:CreateFontString(nil, 'ARTWORK', 'GameFontNormalLarge')
-keyTitle:SetPoint('TOPLEFT', cbDebug, 'BOTTOMLEFT', 0, -20)
+keyTitle:SetPoint('TOPLEFT', sliderPad, 'BOTTOMLEFT', 0, -20)
 keyTitle:SetText('按键设置')
 
-local keyHint = content:CreateFontString(nil, 'ARTWORK', 'GameFontHighlight')
-keyHint:SetPoint('TOPLEFT', keyTitle, 'BOTTOMLEFT', 0, -8)
-keyHint:SetJustifyH('LEFT')
-keyHint:SetText('点一下按钮，再直接按下手柄对应的物理键即可（按 ESC 取消）。')
+local keyHint = WrappedText(keyTitle, 'GameFontHighlight',
+	'点一下按钮，再直接按下手柄对应的物理键即可（按 ESC 取消）。', -8)
 
 local keyButtons = {}
 local function CreateKeyButton(parent, action, labelText)
@@ -220,10 +257,8 @@ local scrollTitle = content:CreateFontString(nil, 'ARTWORK', 'GameFontNormalLarg
 scrollTitle:SetPoint('TOPLEFT', kbRight, 'BOTTOMLEFT', 0, -20)
 scrollTitle:SetText('滚动按键')
 
-local scrollHint = content:CreateFontString(nil, 'ARTWORK', 'GameFontHighlight')
-scrollHint:SetPoint('TOPLEFT', scrollTitle, 'BOTTOMLEFT', 0, -8)
-scrollHint:SetJustifyH('LEFT')
-scrollHint:SetText('窗口打开时用它翻动长列表（默认 PageUp / PageDown，可改）。')
+local scrollHint = WrappedText(scrollTitle, 'GameFontHighlight',
+	'窗口打开时用它翻动长列表（默认 PageUp / PageDown，可改）。', -8)
 
 local kbScrollUp = CreateKeyButton(content, 'SCROLLUP', '上翻:')
 kbScrollUp:SetPoint('TOPLEFT', scrollHint, 'BOTTOMLEFT', 0, -10)
@@ -240,10 +275,10 @@ end
 local function RefreshCursor() ns.Cursor:Refresh() end
 
 -- 内容帧高度随实际内容变化（最后一个名单区块的列表会随条目数变高）
-local lastListFrame
+local contentBottom
 local function UpdateContentHeight()
 	local top = content:GetTop()
-	local bottom = lastListFrame and lastListFrame:GetBottom()
+	local bottom = contentBottom and contentBottom:GetBottom()
 	if top and bottom then
 		content:SetHeight((top - bottom) + 24)
 	end
@@ -258,10 +293,7 @@ local function CreateListSection(parent, anchor, cfg)
 	title:SetPoint('TOPLEFT', anchor, 'BOTTOMLEFT', 0, -24)
 	title:SetText(cfg.title)
 
-	local hint = parent:CreateFontString(nil, 'ARTWORK', 'GameFontHighlight')
-	hint:SetPoint('TOPLEFT', title, 'BOTTOMLEFT', 0, -8)
-	hint:SetJustifyH('LEFT')
-	hint:SetText(cfg.hint)
+	local hint = WrappedText(title, 'GameFontHighlight', cfg.hint, -8)
 
 	local nameBox = CreateFrame('EditBox', nil, parent)
 	nameBox:SetSize(160, 24)
@@ -285,10 +317,8 @@ local function CreateListSection(parent, anchor, cfg)
 	listHead:SetJustifyH('LEFT')
 	listHead:SetText(ACCENT .. cfg.listLabel .. '|r')
 
-	local listHint = parent:CreateFontString(nil, 'ARTWORK', 'GameFontHighlightSmall')
-	listHint:SetPoint('TOPLEFT', listHead, 'BOTTOMLEFT', 0, -6)
-	listHint:SetJustifyH('LEFT')
-	listHint:SetText('点击条目即可选中（再点一次取消），选中后点「删除选中」移除。')
+	local listHint = WrappedText(listHead, 'GameFontHighlightSmall',
+		'点击条目即可选中（再点一次取消），选中后点「删除选中」移除。', -6)
 
 	local delBtn = CreateFrame('Button', nil, parent, 'UIPanelButtonTemplate')
 	delBtn:SetSize(88, 22)
@@ -313,7 +343,11 @@ local function CreateListSection(parent, anchor, cfg)
 			row:SetHighlightTexture('Interface\\QuestFrame\\UI-QuestTitleHighlight')
 			local text = row:CreateFontString(nil, 'ARTWORK', 'GameFontHighlightSmall')
 			text:SetPoint('LEFT', 6, 0)
+			text:SetPoint('RIGHT', row, 'RIGHT', -4, 0)
 			text:SetJustifyH('LEFT')
+			-- 名字很长时裁在列表右边界内，避免顶出面板
+			text:SetWordWrap(false)
+			text:SetNonSpaceWrap(false)
 			row.text = text
 			local sel = row:CreateTexture(nil, 'BACKGROUND')
 			sel:SetTexture('Interface\\Buttons\\WHITE8X8')
@@ -443,7 +477,7 @@ local wlSection = CreateListSection(content, kbScrollUp, {
 	hint = '输入窗口名即可让它成为导航目标（用 /fstack 查看名字，内置白名单已覆盖常见窗口）。',
 	emptyText = '（暂无，可在上方输入后点「添加」）',
 })
-lastListFrame = wlSection.listFrame
+contentBottom = wlSection.listFrame
 
 -- 自定义黑名单：优先级高于白名单，用来彻底排除某些窗口
 local blSection = CreateListSection(content, wlSection.listFrame, {
@@ -453,7 +487,7 @@ local blSection = CreateListSection(content, wlSection.listFrame, {
 	hint = '输入窗口名即可把它排除在导航之外（也可用 /mynav unpick 鼠标选取，优先级高于白名单）。',
 	emptyText = '（暂无，可在上方输入后点「添加」）',
 })
-lastListFrame = blSection.listFrame
+contentBottom = blSection.listFrame
 
 -- 按钮黑名单：窗口内部的控件（例如不叫 close 的关闭按钮），导航时直接跳过
 local nbSection = CreateListSection(content, blSection.listFrame, {
@@ -463,11 +497,46 @@ local nbSection = CreateListSection(content, blSection.listFrame, {
 	hint = '输入控件帧名即可在导航时跳过它（无名控件可用 /mynav skip 鼠标选取，自动生成 @祖先/索引 路径标识）。',
 	emptyText = '（暂无，可在上方输入后点「添加」）',
 })
-lastListFrame = nbSection.listFrame
+	
+---------------------------------------------------------------------
+-- 命令说明：放在面板最后，方便查用（长句自动换行，不会顶出面板右边）
+---------------------------------------------------------------------
+local cmdTitle = content:CreateFontString(nil, 'ARTWORK', 'GameFontNormalLarge')
+cmdTitle:SetPoint('TOPLEFT', nbSection.listFrame, 'BOTTOMLEFT', 0, -24)
+cmdTitle:SetText('命令说明')
+
+local cmdHint = WrappedText(cmdTitle, 'GameFontHighlight',
+	'在聊天框输入；不带参数输入 /mynav 会打开本面板。', -8)
+
+local cmdText = WrappedText(cmdHint, 'GameFontHighlightSmall', table.concat({
+	ACCENT .. '面板与开关|r',
+	ACCENT .. '/mynav|r 或 ' .. ACCENT .. '/mynav config|r — 打开本设置面板',
+	ACCENT .. '/mynav on|r / ' .. ACCENT .. 'off|r — 开启 / 关闭导航（关闭会解绑按键）',
+	ACCENT .. '/mynav reset|r — 恢复插件接管前的原始按键绑定',
+	'',
+	ACCENT .. '窗口名单|r',
+	ACCENT .. '/mynav pick|r — 鼠标点选窗口，加入导航白名单',
+	ACCENT .. '/mynav unpick|r — 鼠标点选窗口，加入导航黑名单',
+	ACCENT .. '/mynav add|r / ' .. ACCENT .. 'remove|r <帧名> — 手动增删白名单',
+	ACCENT .. '/mynav block|r / ' .. ACCENT .. 'unblock|r <帧名> — 手动增删黑名单（优先于白名单）',
+	'',
+	ACCENT .. '按钮黑名单|r',
+	ACCENT .. '/mynav skip|r — 鼠标点选控件，导航时跳过它',
+	ACCENT .. '/mynav skip|r <标识> — 手动加入按钮黑名单',
+	ACCENT .. '/mynav unskip|r <标识> — 移出按钮黑名单',
+	'',
+	ACCENT .. '排查|r',
+	ACCENT .. '/mynav debug|r — 开关调试输出',
+	ACCENT .. '/mynav dump|r [' .. ACCENT .. '关键词|r] — 列出顶层帧，标注是否可导航',
+	ACCENT .. '/mynav nodes|r — 打印当前扫描到的导航节点',
+	ACCENT .. '/mynav tree|r <帧名> — 打印某个帧的子帧树',
+}, '\n'), -8)
+contentBottom = cmdText
 
 -- 滚动帧尺寸变化时（面板拉伸 / 分辨率变化）重算内容宽度与高度
 scroll:SetScript('OnSizeChanged', function(self, width)
 	content:SetWidth(width)
+	UpdateWrapWidths(width)
 	wlSection.listFrame:SetWidth(width - 16)
 	blSection.listFrame:SetWidth(width - 16)
 	nbSection.listFrame:SetWidth(width - 16)
@@ -478,6 +547,7 @@ panel:SetScript('OnShow', function()
 	MyNavigateDB = MyNavigateDB or {}
 	-- 内容宽度跟随滚动帧，滚动条回到顶部
 	content:SetWidth(scroll:GetWidth())
+	UpdateWrapWidths(scroll:GetWidth())
 	wlSection.listFrame:SetWidth(scroll:GetWidth() - 16)
 	blSection.listFrame:SetWidth(scroll:GetWidth() - 16)
 	nbSection.listFrame:SetWidth(scroll:GetWidth() - 16)
@@ -486,6 +556,9 @@ panel:SetScript('OnShow', function()
 	cbExclusive:SetChecked(MyNavigateDB.exclusive ~= false)
 	cbHint:SetChecked(MyNavigateDB.hint == true)
 	cbDebug:SetChecked(MyNavigateDB.debug == true)
+	for i = 1, #styleSliders do
+		styleSliders[i]:SetValue(ns.GetBorderStyle(styleSliders[i].styleKey))
+	end
 	for i = 1, #keyButtons do
 		keyButtons[i].btn:SetText(ns.GetKey(keyButtons[i].action))
 	end
