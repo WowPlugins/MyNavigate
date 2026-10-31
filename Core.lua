@@ -267,6 +267,8 @@ local function AddNavigable(frame)
 	MyNavigateDB.extra = MyNavigateDB.extra or {}
 	MyNavigateDB.extra[name] = true
 	print('|cff739BD0MyNavigate|r: 已加入导航白名单: '..name)
+	-- 新加入白名单的窗口可能早就存在但还没挂钩子，这里补挂（可见的会走一次 50ms 落点）
+	ns.RegisterRoots()
 	ns.Cursor:Refresh()
 	return true
 end
@@ -441,126 +443,127 @@ local function StartPick(mode)
 	end
 end
 
--- 自动跟随窗口：白名单窗口的可见集合发生变化时自动刷新光标。
--- 打开窗口 → 光标直接落到该窗口的第一个节点；关闭窗口 → 自动收起或切到剩下的窗口。
-local watcher = CreateFrame('Frame')
-local watchTimer, shown = 0, {}
--- 刚打开的窗口：等它的控件建好、布局稳定之后再落点。
--- 刚 Show 的窗口（尤其界面设置的二级面板）这一拍往往还在创建/重排，
--- 立刻落点会先落到一个马上被隐藏的占位控件上，下一拍再被纠正 —— 看起来就是连跳两次。
-local pendingRoot
-local pendingSince = 0
-local pendingCount         -- 上一次只看不落时的节点数，用来判断新窗口是否已经建完
-local pendingTries = 0     -- 等待拍数上限，防止界面一直变化时永远不落点
--- 只检测到「有窗口关闭」时也压一拍：有些窗口是先关掉旧的、下一拍才显示新的，
--- 立刻按关闭处理会先落到旧位置，等新窗口出现再落一次（连跳两次）。
-local closePending = false
-local closeSince = 0
--- 检查间隔：只有「正在等新窗口建完」才用 0.05s 抢时间；
--- 其余时候（有窗口 / 没窗口）都是 0.1s —— 玩家跑图打怪时占绝大多数时间，
--- 那里没必要每秒扫 20 次白名单。
-local watchInterval = 0.1
--- 按当前状态决定下一拍的检查间隔
-local function UpdateWatchInterval()
-	watchInterval = pendingRoot and 0.05 or 0.1
+-- 自动跟随窗口：白名单窗口 Show/Hide 时立即刷新光标（事件驱动）
+---------------------------------------------------------------------
+-- 参考 ConsolePort 的 Drivers/UIStack.lua，把「0.1s 轮询 + 连续两拍节点数稳定才落点」
+-- 换成「给每个白名单根帧挂 OnShow/OnHide 钩子 + 50ms 合并缓冲」：
+--   * 窗口一开关当场触发，不再白等最多 100ms 的轮询；
+--   * 同时开/关多个窗口（背包+银行、连关多个弹窗）在 50ms 内合成一次刷新，
+--     也刚好避开窗口刚 Show 时控件还在创建/重排的那一两帧；
+--   * 缓冲结束只扫一次：Cursor:Refresh 会按 changedRoots 做增量重扫，
+--     不再「先 ScanOnly 一次、Refresh 再全量扫一次」。
+-- 轮询仍然保留但降到 0.5s，只负责发现晚创建 / 按需加载的白名单窗口并补挂钩子。
+---------------------------------------------------------------------
+local FLUSH_DELAY = 0.05    -- 开关窗口的合并缓冲（秒）
+local MAX_FLUSH_RETRIES = 3 -- 窗口内容晚于 50ms 才建好时的补试次数
+local hookRegistered = {}   -- 已经挂过 Show/Hide 钩子的根帧
+local rootVisible = {}      -- 当前可见的根帧（钩子维护，用来判断 Show 是不是「新打开」）
+local changedRoots = {}     -- 缓冲期内发生变化的根帧集合
+local flushRoot             -- 缓冲期最后打开的那个窗口（优先落到它里面）
+local flushSince = 0        -- 缓冲期起始时间，用来判断玩家是否已经抢先自己导航
+local flushRetry = 0        -- 本次缓冲已经补试过几次
+local flushing = false
+
+local function CanTrack()
+	return MyNavigateDB and MyNavigateDB.enabled ~= false
 end
+
+local flushTimer = CreateFrame('Frame')
+
+-- 前向声明：DoFlush 的补试分支要重新排一次缓冲（定义在下方）
+local ScheduleFlush
+
+local function DoFlush()
+	flushing = false
+	flushTimer:SetScript('OnUpdate', nil)
+	flushTimer.Elapsed = 0
+	local root, changed = flushRoot, changedRoots
+	flushRoot, changedRoots = nil, {}
+	if not CanTrack() then return end
+	-- 缓冲期内玩家已经自己按方向键搬过光标：放弃这次自动落点，避免连跳
+	if ns.Cursor.GetLastMoveTime and ns.Cursor:GetLastMoveTime() > flushSince then return end
+	-- 窗口刚打开又被关掉 / 被拉黑 / 玩家已经自己进去了：不再搬运，只做普通刷新
+	if root and not (root:IsVisible() and ns.IsNavigableRoot(root)) then root = nil end
+	if root and ns.Cursor.IsCurrentInRoot and ns.Cursor:IsCurrentInRoot(root) then root = nil end
+	ns.Cursor:Refresh(root, changed)
+	-- 窗口的控件可能晚于 50ms 才建好（按需填充的列表 / 异步加载的面板）：
+	-- 这一拍没落进刚打开的窗口就隔 50ms 再试，最多补几次，避免"窗口开了却没有金框"。
+	if root and flushRetry < MAX_FLUSH_RETRIES then
+		local cur = ns.Cursor.GetCurrentNode and ns.Cursor:GetCurrentNode()
+		if not cur or not (ns.Cursor.IsCurrentInRoot and ns.Cursor:IsCurrentInRoot(root)) then
+			ScheduleFlush(root, root, flushRetry + 1)
+		end
+	end
+end
+
+local function OnFlushTick(self, elapsed)
+	self.Elapsed = (self.Elapsed or 0) + elapsed
+	if self.Elapsed < FLUSH_DELAY then return end
+	DoFlush()
+end
+
+-- 记录一次变化，并把刷新时刻推迟 50ms（同一批事件只刷新一次）
+-- retry：补试序号（0 = 新的变化；由 DoFlush 的补试分支传入 1..MAX_FLUSH_RETRIES）
+function ScheduleFlush(root, changedRoot, retry)
+	if not CanTrack() then return end
+	if not flushing then
+		flushing = true
+		flushSince = GetTime()
+		flushRetry = retry or 0
+		flushTimer.Elapsed = 0
+		flushTimer:SetScript('OnUpdate', OnFlushTick)
+	end
+	changedRoots[changedRoot] = true
+	if root then flushRoot = root end
+end
+
+-- 给白名单根帧挂 Show/Hide 钩子（幂等）。
+-- silent=true 用于登录时首次注册：那时已经可见的窗口只记状态、不触发落点，
+-- 避免登录瞬间光标自己跳出来。
+local function HookRoot(frame, silent)
+	if hookRegistered[frame] or not ns.IsNavigableRoot(frame) then return end
+	hookRegistered[frame] = true
+	local visible = frame:IsVisible()
+	rootVisible[frame] = visible and true or nil
+	if visible and not silent then
+		-- 钩子挂晚了（窗口在两次 0.5s 扫描之间创建并显示）：补一次打开事件
+		ScheduleFlush(frame, frame)
+	end
+	frame:HookScript('OnShow', function()
+		rootVisible[frame] = true
+		ScheduleFlush(frame, frame)
+	end)
+	frame:HookScript('OnHide', function()
+		if not rootVisible[frame] then return end
+		rootVisible[frame] = nil
+		ScheduleFlush(nil, frame)
+	end)
+end
+
+-- 遍历 UIParent 的子帧，给命中白名单的窗口补挂钩子。
+-- 本客户端的 GetChildren() 返回多值（与 ns.GetRootFrames 的 AddRoots 一致），
+-- 用变长参数接收，避免为每个子帧新建包装表。
+local function RegisterRoots(silent, ...)
+	for i = 1, select('#', ...) do
+		local child = select(i, ...)
+		if child.GetName and child:GetName() then HookRoot(child, silent) end
+	end
+end
+function ns.RegisterRoots(silent)
+	RegisterRoots(silent, UIParent:GetChildren())
+end
+
+-- 兜底轮询：开关已由钩子即时触发，这里每 0.5s 只发现「晚创建 / 按需加载」的窗口
+-- 并补挂钩子（例如 Blizzard_CombatLog、成就面板这类 LoadAddOn 后才出现的帧）。
+local watcher = CreateFrame('Frame')
+local watchTimer = 0
+local WATCH_INTERVAL = 0.5
 watcher:SetScript('OnUpdate', function(_, elapsed)
 	watchTimer = watchTimer + elapsed
-	if watchTimer < watchInterval then return end
+	if watchTimer < WATCH_INTERVAL then return end
 	watchTimer = 0
-	if MyNavigateDB and MyNavigateDB.enabled == false then
-		pendingRoot = nil
-		closePending = false
-		ns.navActive = false
-		if ns.SetGamepadOverride then ns.SetGamepadOverride(false) end
-		watchInterval = 0.2   -- 禁用时不用快速轮询，省点开销
-		return
-	end
-	local roots, cur, opened = ns.GetRootFrames(), {}, nil
-	for i = 1, #roots do
-		local name = roots[i]:GetName()
-		if name then
-			cur[name] = true
-			if not shown[name] then opened = roots[i] end
-		end
-	end
-	-- 集合有变化才刷新（新增窗口，或有关掉的窗口），避免每 0.2 秒重复扫描
-	local changed = opened ~= nil
-	if not changed then
-		for name in pairs(shown) do
-			if not cur[name] then
-				changed = true
-				break
-			end
-		end
-	end
-	shown = cur
-	-- 手柄按键的接管由 Cursor:Refresh 依据「是否真有可导航节点」决定
-	if pendingRoot then
-		local root = pendingRoot
-		-- 这 0.2s 内玩家已经自己按方向键搬过光标（UIControl 会直接落点）：
-		-- 放弃这次自动落点，否则会再挪一次，变成连跳
-		local moved = ns.Cursor.GetLastMoveTime and ns.Cursor:GetLastMoveTime() > pendingSince
-		if moved then
-			pendingRoot = nil
-		else
-			-- 只看不落：节点数这一拍和上一拍一致，说明窗口里的控件已经建完、布局稳定，
-			-- 这时再正式落点，就不会先落在一个马上被隐藏的占位控件上（避免「先落一处、
-			-- 零点几秒后又跳到另一处」）。一直不稳定时最多等 5 拍。
-			-- 只扫这个新窗口就够（不传 root 会扫全部白名单窗口，纯属浪费）
-			pendingTries = pendingTries + 1
-			local count = ns.Cursor:ScanOnly(root)
-			if count == pendingCount or pendingTries > 5 then
-				pendingRoot = nil
-				if root:IsVisible() and ns.IsNavigableRoot(root) then
-					ns.Cursor:Refresh(root)
-				else
-					ns.Cursor:Refresh()
-				end
-			else
-				pendingCount = count
-			end
-		end
-		-- 同一拍里又有别的窗口新开，留到下一拍处理（shown 已更新，不会再被识别为 opened）
-		if opened and opened ~= root and not pendingRoot then
-			pendingRoot = opened
-			pendingSince = GetTime()
-			pendingCount = ns.Cursor:ScanOnly(opened)
-			pendingTries = 0
-		end
-		UpdateWatchInterval()
-		return
-	end
-	if changed then
-		if opened then
-			-- 玩家可能已经抢在自动落点之前自己导航进这个窗口了：那就别再搬一次
-			if ns.Cursor.IsCurrentInRoot and ns.Cursor:IsCurrentInRoot(opened) then
-				closePending = false
-				UpdateWatchInterval()
-				return
-			end
-			closePending = false
-			pendingRoot = opened
-			pendingSince = GetTime()
-			pendingTries = 0
-			pendingCount = ns.Cursor:ScanOnly(opened)
-			-- 等待期间别让 OnUpdate 自动纠偏，否则会多挪一次
-			if ns.Cursor.HoldAutoCorrect then ns.Cursor:HoldAutoCorrect() end
-		else
-			-- 只有窗口关闭：先压一拍，等下一拍确认没有新窗口再刷新
-			closePending = true
-			closeSince = GetTime()
-		end
-		UpdateWatchInterval()
-		return
-	end
-	if closePending then
-		closePending = false
-		-- 这一拍内玩家已经自己动过光标的话，就不要再刷新搬一次
-		local moved = ns.Cursor.GetLastMoveTime and ns.Cursor:GetLastMoveTime() > closeSince
-		if not moved then ns.Cursor:Refresh() end
-	end
-	UpdateWatchInterval()
+	if not CanTrack() then return end
+	RegisterRoots(false, UIParent:GetChildren())
 end)
 
 -- 导航绑定入口（仅在覆盖绑定生效、即存在可导航窗口时会被触发）
@@ -697,7 +700,14 @@ end)
 
 local frame = CreateFrame('Frame')
 frame:RegisterEvent('PLAYER_LOGIN')
-frame:SetScript('OnEvent', function()
+frame:RegisterEvent('ADDON_LOADED')
+frame:SetScript('OnEvent', function(_, event, arg1)
+	if event == 'ADDON_LOADED' then
+		-- 按需加载的暴雪界面（战斗记录 / 成就 / 日历等）在这时才创建白名单窗口，
+		-- 这里马上补挂钩子，不必等下一拍 0.5s 的兜底轮询
+		if arg1 and arg1:sub(1, 8) == 'Blizzard' then ns.RegisterRoots() end
+		return
+	end
 	MyNavigateDB = MyNavigateDB or {}
 	if MyNavigateDB.enabled == nil then MyNavigateDB.enabled = true end
 	if MyNavigateDB.exclusive == nil then MyNavigateDB.exclusive = true end
@@ -730,7 +740,11 @@ frame:SetScript('OnEvent', function()
 		if k2 then SetBinding(k2, nil) cleaned = true end
 	end
 	if cleaned then SaveBindings(GetCurrentBindingSet()) end
-	-- 覆盖绑定不在这里应用：交由 Cursor:Refresh 依据「是否真有可导航节点」动态开关
+	-- 给现有白名单窗口挂上 Show/Hide 钩子（silent：登录时已可见的窗口先只记录状态）
+	ns.RegisterRoots(true)
+	-- 登录时已经有窗口开着（例如登录弹窗）：补一次落点，与旧版轮询首拍的行为一致
+	--（覆盖绑定也由这次 Refresh 依据「是否真有可导航节点」重新判定）
+	ns.Cursor:Refresh()
 end)
 
 local LABELS = {
@@ -791,6 +805,7 @@ SlashCmdList['MYNAV'] = function(msg)
 			MyNavigateDB.extra = MyNavigateDB.extra or {}
 			MyNavigateDB.extra[arg] = true
 			print('|cff739BD0MyNavigate|r: 已加入导航白名单: '..arg)
+			ns.RegisterRoots()   -- 新加入白名单的窗口补挂 Show/Hide 钩子
 			ns.Cursor:Refresh()
 		else
 			print('|cff739BD0MyNavigate|r: 用法 /mynav add <帧名>')
@@ -814,6 +829,7 @@ SlashCmdList['MYNAV'] = function(msg)
 		if arg and MyNavigateDB.black then
 			MyNavigateDB.black[arg] = nil
 			print('|cff739BD0MyNavigate|r: 已移出导航黑名单: '..arg)
+			ns.RegisterRoots()   -- 移出黑名单后该窗口才可导航，补挂钩子
 			ns.Cursor:Refresh()
 		end
 	elseif cmd == 'pick' then

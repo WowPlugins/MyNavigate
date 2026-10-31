@@ -60,7 +60,10 @@ local Node = {
 	usable = { Button = true, CheckButton = true, EditBox = true, Slider = true },
 	cache = {}, rects = {}, scalar = 3, -- scalar: 轴向距离放大倍数（越大越「不斜跳」）
 	-- 扫描用的显式栈（复用，避免每次扫描新建；见 Node:Scan 注释）
-	_stackNode = {}, _stackSuper = {},
+	_stackNode = {}, _stackSuper = {}, _stackRoot = {},
+	-- 当前缓存里包含哪些根窗口（键为根帧）。
+	-- Cursor:Refresh 用它做增量重扫：只清掉/重扫发生变化的窗口，其余窗口沿用缓存。
+	cachedRoots = {},
 }
 ns.Node = Node
 
@@ -121,10 +124,12 @@ end
 -- 把一批同级帧按逆序压入显式栈。这里的多值来自 GetChildren()，
 -- 本客户端 GetChildren() 直接返回多值，用 ... 接收再 select 逐个取出，
 -- 既不用为每个父帧新建一张子帧表，也不会把剩下的兄弟参数层层转发。
-local function PushNodes(nodes, supers, top, super, ...)
+-- roots 与 nodes/supers 平行：记录每个节点是从哪个根窗口扫进来的，
+-- 增量重扫时才能按窗口剔除/保留缓存（见 Node:PruneCachedRoots）。
+local function PushNodes(nodes, supers, roots, top, super, root, ...)
 	for i = select('#', ...), 1, -1 do
 		top = top + 1
-		nodes[top], supers[top] = select(i, ...), super
+		nodes[top], supers[top], roots[top] = select(i, ...), super, root
 	end
 	return top
 end
@@ -134,15 +139,15 @@ end
 -- 宽窗口（背包/法术书/成就）会把 Lua 栈顶到上千层，栈增长要一次性分配一大块内存。
 -- 改成显式栈后，栈只是 Node 上复用的一张普通表，深度只跟树的层数有关，也不再重复拷贝兄弟参数。
 function Node:Scan(roots)
-	local nodes, supers = self._stackNode, self._stackSuper
+	local nodes, supers, rootStack = self._stackNode, self._stackSuper, self._stackRoot
 	local top = 0
 	for i = #roots, 1, -1 do
 		top = top + 1
-		nodes[top], supers[top] = roots[i], nil
+		nodes[top], supers[top], rootStack[top] = roots[i], nil, roots[i]
 	end
 	while top > 0 do
-		local node, super = nodes[top], supers[top]
-		nodes[top], supers[top] = nil, nil
+		local node, super, root = nodes[top], supers[top], rootStack[top]
+		nodes[top], supers[top], rootStack[top] = nil, nil, nil
 		top = top - 1
 		if self:IsRelevant(node) then
 			local blacklisted = self:IsNodeBlacklisted(node)
@@ -152,13 +157,14 @@ function Node:Scan(roots)
 			-- 避免把整个容器（及其内部控件）一起屏蔽掉
 			if not blacklisted and self:IsDrawn(node, super) then
 				if self:IsInteractive(node, object, mouseEnabled) then
-					self:CacheItem(node, object, super, level)
+					self:CacheItem(node, object, super, level, root)
 				elseif mouseEnabled then
-					self:CacheRect(node, level)
+					self:CacheRect(node, level, root)
 				end
 			end
 			if self:IsTree(node) then
-				top = PushNodes(nodes, supers, top, self:GetSuperNode(super, node), node:GetChildren())
+				top = PushNodes(nodes, supers, rootStack, top,
+					self:GetSuperNode(super, node), root, node:GetChildren())
 			end
 		end
 	end
@@ -213,16 +219,35 @@ function Node:RunScan(roots)
 	-- rects 逐个有序插入是 O(n²)，改成尾部追加 + 扫描结束统一排序
 	table.sort(self.rects, SortRectsByLevel)
 	self:ScrubCache(self:GetNextCacheItem(nil))
+	-- 记录本次扫到的根窗口，下次增量重扫时据此判断哪些窗口可以复用缓存
+	for i = 1, #roots do self.cachedRoots[roots[i]] = true end
 	return self.cache
 end
 
-function Node:CacheItem(node, object, super, level)
-	self:CacheRect(node, level)
-	tinsert(self.cache, { node = node, object = object, super = super, level = level })
+function Node:CacheItem(node, object, super, level, root)
+	self:CacheRect(node, level, root)
+	tinsert(self.cache, { node = node, object = object, super = super, level = level, root = root })
 end
 
-function Node:CacheRect(node, level)
-	tinsert(self.rects, { node = node, level = level })
+function Node:CacheRect(node, level, root)
+	tinsert(self.rects, { node = node, level = level, root = root })
+end
+
+-- 增量重扫前调用：把指定根窗口贡献的节点和遮挡矩形全部剔掉，
+-- 其余窗口的缓存原样保留（随后 Node:RunScan 只扫这些窗口）。
+function Node:PruneCachedRoots(prune)
+	local cache, rects = self.cache, self.rects
+	local i = #cache
+	while i > 0 do
+		if prune[cache[i].root] then tremove(cache, i) end
+		i = i - 1
+	end
+	i = #rects
+	while i > 0 do
+		if prune[rects[i].root] then tremove(rects, i) end
+		i = i - 1
+	end
+	for root in pairs(prune) do self.cachedRoots[root] = nil end
 end
 
 function Node:RemoveCacheItem(cacheIndex)
@@ -230,7 +255,9 @@ function Node:RemoveCacheItem(cacheIndex)
 	return cacheIndex - 1
 end
 
-function Node:ClearCache() wipe(self.cache); wipe(self.rects) end
+function Node:ClearCache()
+	wipe(self.cache); wipe(self.rects); wipe(self.cachedRoots)
+end
 function Node:HasItems() return #self.cache > 0 end
 function Node:GetNextCacheItem(i) return next(self.cache, i and i > 0 and i or nil) end
 

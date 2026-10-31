@@ -496,26 +496,54 @@ function Cursor:MoveTo(item)
 	end
 end
 
--- 只重建缓存、不移动光标；返回可导航节点数。
--- 新窗口刚打开时它的控件还在陆续创建，Core 用一个稳定的节点数判断「已经建完了」。
-function Cursor:ScanOnly(root)
-	Node:ClearCache()
-	if root then
-		singleRoot[1] = root
-		Node:RunScan(singleRoot)
-	else
-		Node:RunScan(ns.GetRootFrames())
-	end
-	return #Node.cache
-end
-
--- 重新扫描所有白名单窗口，并重算当前节点。
+-- 重新扫描白名单窗口，并重算当前节点。
 -- selectRoot：刚打开的窗口。传入时直接落到它里面，并且只移动一次
 --（否则 Refresh 先搬一次、SelectRoot 又搬一次，调用方看起来就是连跳）。
-function Cursor:Refresh(selectRoot)
+-- changedRoots（可选）：本次发生变化的根窗口集合。传入时只重扫这些窗口
+--（以及缓存里还没有的窗口），其余窗口沿用上次缓存；背包 + 银行这类多个
+--窗口同开时，单次扫描量从「全部窗口」降到「变化的那一个」。
+-- 有窗口关闭时退回全量扫：被关掉的窗口之前在 ScrubCache 里把别的窗口的
+--节点当遮挡删掉了，只重扫新窗口捞不回来。
+function Cursor:Refresh(selectRoot, changedRoots)
 	local roots = ns.GetRootFrames()
-	Node:ClearCache()
-	Node:RunScan(roots)
+	local partial = false
+	if changedRoots then
+		-- 用「当前 root 集合」而不是「帧是否可见」判断：弹窗独占生效时，
+		-- 背后的窗口仍然 IsVisible，但已经不该有节点在缓存里了，这一样算窗口离开。
+		local visible = {}
+		for i = 1, #roots do visible[roots[i]] = true end
+		local prune, removedAny = {}, false
+		for root in pairs(Node.cachedRoots) do
+			if not visible[root] then
+				prune[root] = true
+				removedAny = true
+			end
+		end
+		if not removedAny then
+			-- 要重扫的窗口 = 本次变化的 + 缓存里还没有的（弹窗关掉后重新露出来的窗口也算）
+			local rescan = {}
+			for i = 1, #roots do
+				local root = roots[i]
+				if changedRoots[root] or not Node.cachedRoots[root] then
+					rescan[root] = true
+					prune[root] = true
+				end
+			end
+			if next(rescan) then
+				Node:PruneCachedRoots(prune)
+				local subset = {}
+				for i = 1, #roots do
+					if rescan[roots[i]] then subset[#subset + 1] = roots[i] end
+				end
+				Node:RunScan(subset)
+				partial = true
+			end
+		end
+	end
+	if not partial then
+		Node:ClearCache()
+		Node:RunScan(roots)
+	end
 	-- 当前节点所在窗口被关掉时，先回溯记忆栈，回到进入该窗口前的位置；
 	-- 窗口本身还开着（只是面板换了 / 控件被藏）时只在窗口内重选，
 	-- 不翻记忆栈 —— 那里可能存着另一个窗口的旧位置，会造成跨窗口跳。
@@ -743,7 +771,7 @@ Cursor:SetScript('OnUpdate', function(self, elapsed)
 		-- 确实不见了。窗口本身还开着（只是面板换了 / 控件被藏）：重新扫描并在
 		-- 同一个窗口内落地。不要翻记忆栈 —— 里面可能是另一个窗口的旧位置，
 		-- 翻出来就会「突然从窗口一边跳到另一边」。
-		-- 窗口已经关了的话交给 Core 的 watcher 统一处理，这里不抢跑，
+		-- 窗口已经关了的话交给 Core 的 Show/Hide 钩子（50ms 缓冲）统一处理，这里不抢跑，
 		-- 否则会先落到旧窗口的位置、下一拍再落到新窗口（连跳两次）。
 		local root = TopParent(current.node)
 		if root and root:IsVisible() then
