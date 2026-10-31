@@ -123,12 +123,18 @@ styleTitle:SetPoint('TOPLEFT', cbDebug, 'BOTTOMLEFT', 0, -20)
 styleTitle:SetText('边框样式')
 
 local styleHint = WrappedText(styleTitle, 'GameFontHighlightSmall',
-	'金框默认自动贴合控件美术，下面三项用来手动微调。\n'
-	.. '额外内缩：自动贴合后仍偏大时整体往里收；页签类 4~7、大面板/列表 6~8 通常够用。\n'
-	.. '边框粗细：金框线本身的厚度，一般保持 2，小控件显得太粗时调到 1。\n'
-	.. '边框外扩：金框与美术之间的空隙，0 是贴着美术边缘，想更紧凑用 0~1。\n'
-	.. '三项都是全局设置，改完关掉面板、回到原窗口再导航即可看到效果。\n'
-	.. '滑块需用鼠标拖动；数值改动立即保存，/reload 后仍然生效。', -8)
+	'鼠标放到滑块上可查看说明，也可点两侧的 - / + 调节；改动立即保存。', -8)
+
+-- 三个滑块各自的说明，同时用于悬浮提示
+local STYLE_TIPS = {
+	inset = '在自动贴合结果的基础上，四条边再一起往里收 N 像素（0~12）。\n'
+		.. '自动贴合后仍然偏大的界面用它收紧：页签类 4~7，大面板/列表 6~8 通常够用。\n'
+		.. '全局设置，改完关掉面板、回到原窗口再导航即可看到效果。',
+	thick = '金色边框线本身的厚度（1~3 像素）。\n'
+		.. '一般保持 2；小控件显得太粗时调到 1，高分辨率或远距离看不清时调到 3。',
+	pad = '金框内沿与控件美术之间的空隙（0~4 像素）。\n'
+		.. '0 表示贴着美术边缘；想更紧凑用 0~1，想更透气用 3~4。',
+}
 
 -- 三项都存 MyNavigateDB.border*，拖完立即重画当前的金框（不重扫窗口）
 local styleSliders = {}
@@ -152,6 +158,40 @@ local function CreateStyleSlider(anchor, key, labelText, gap)
 
 	local value = content:CreateFontString(nil, 'ARTWORK', 'GameFontHighlightSmall')
 	value:SetPoint('LEFT', slider, 'RIGHT', 12, 0)
+
+	-- 悬浮说明（滑块和两侧的 ± 按钮共用一个提示）
+	local tips = STYLE_TIPS[key]
+	local function AddTip(frame)
+		frame:SetScript('OnEnter', function(self)
+			GameTooltip:SetOwner(self, 'ANCHOR_RIGHT')
+			GameTooltip:SetText(labelText, 1, 1, 1)
+			GameTooltip:AddLine(tips, 1, 1, 1, true)
+			GameTooltip:Show()
+		end)
+		frame:SetScript('OnLeave', function()
+			GameTooltip:Hide()
+		end)
+	end
+	AddTip(slider)
+
+	-- 手柄可操作的 ± 步进按钮（鼠标拖动之外的另一条调节方式）
+	local function CreateStepButton(stepText, delta)
+		local btn = CreateFrame('Button', nil, content, 'UIPanelButtonTemplate')
+		btn:SetSize(22, 20)
+		btn:SetText(stepText)
+		btn:SetScript('OnClick', function()
+			local v = math.floor((slider:GetValue() or 0) + 0.5) + delta
+			v = math.max(limits[1], math.min(limits[2], v))
+			slider:SetValue(v)
+		end)
+		AddTip(btn)
+		return btn
+	end
+
+	local btnMinus = CreateStepButton('-', -1)
+	btnMinus:SetPoint('LEFT', slider, 'RIGHT', 58, 0)
+	local btnPlus = CreateStepButton('+', 1)
+	btnPlus:SetPoint('LEFT', btnMinus, 'RIGHT', 4, 0)
 
 	slider.styleKey = key
 	slider.dbfield = 'border' .. key:sub(1, 1):upper() .. key:sub(2)
