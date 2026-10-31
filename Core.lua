@@ -701,7 +701,7 @@ frame:SetScript('OnEvent', function()
 	MyNavigateDB = MyNavigateDB or {}
 	if MyNavigateDB.enabled == nil then MyNavigateDB.enabled = true end
 	if MyNavigateDB.exclusive == nil then MyNavigateDB.exclusive = true end
-	if MyNavigateDB.hint == nil then MyNavigateDB.hint = true end
+	if MyNavigateDB.hint == nil then MyNavigateDB.hint = false end
 	-- 旧版本用 SetBinding 把 Shift1~8 绑到 MYNAV_*，现已改为固定按键拦截，
 	-- 还原当时保存的原始绑定，避免残留占用
 	if MyNavigateDB.saved then

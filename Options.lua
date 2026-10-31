@@ -484,7 +484,7 @@ panel:SetScript('OnShow', function()
 	scroll:SetVerticalScroll(0)
 	cbEnabled:SetChecked(MyNavigateDB.enabled ~= false)
 	cbExclusive:SetChecked(MyNavigateDB.exclusive ~= false)
-	cbHint:SetChecked(MyNavigateDB.hint ~= false)
+	cbHint:SetChecked(MyNavigateDB.hint == true)
 	cbDebug:SetChecked(MyNavigateDB.debug == true)
 	for i = 1, #keyButtons do
 		keyButtons[i].btn:SetText(ns.GetKey(keyButtons[i].action))
