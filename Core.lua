@@ -650,6 +650,9 @@ local function SafeClick(node, action)
 	if not node or not node.GetName then return nil end
 	local name = node:GetName()
 	if not name then return nil end
+	-- 安全点击最终是 target:Click()，没有 Click 的控件（纯 Frame / Slider / ScrollFrame）
+	-- 会报 attempt to call method 'Click' (a nil value)，这类节点交给 Lua 兜底
+	if not node.Click then return nil end
 	-- 输入框没有可点击的语义，交给 Lua 处理（Y 会去聚焦它）
 	if node.IsObjectType and node:IsObjectType('EditBox') then return nil end
 	-- Y 的自定义特殊点击是 Lua 函数，安全点击表达不了
