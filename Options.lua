@@ -219,52 +219,75 @@ keyTitle:SetPoint('TOPLEFT', sliderPad, 'BOTTOMLEFT', 0, -20)
 keyTitle:SetText('按键设置')
 
 local keyHint = WrappedText(keyTitle, 'GameFontHighlight',
-	'点一下按钮，再直接按下手柄对应的物理键即可（按 ESC 取消）。', -8)
+	'每个动作可绑定两组键，上为主键、下为副键，两组同时生效：点一下按钮，再按下手柄对应的物理键即可（按 ESC 取消）；右键可清空该组，恢复默认。', -8)
 
 local keyButtons = {}
 local function CreateKeyButton(parent, action, labelText)
 	local frame = CreateFrame('Frame', nil, parent)
-	frame:SetSize(160, 42)
+	frame:SetSize(150, 66)
 
 	local label = frame:CreateFontString(nil, 'ARTWORK', 'GameFontNormal')
 	label:SetPoint('TOPLEFT', 0, 0)
 	label:SetText(labelText)
 
-	local btn = CreateFrame('Button', nil, frame, 'UIPanelButtonTemplate')
-	btn:SetSize(120, 22)
-	btn:SetPoint('TOPLEFT', label, 'BOTTOMLEFT', 0, -3)
-	btn:SetText(ns.GetKey(action))
+	-- 每个动作有两组键：上为主键、下为副键，两组同时生效（上下摆放，避免按钮文字互相遮挡）
+	local function MakeSlot(slot, anchor, gapY)
+		local btn = CreateFrame('Button', nil, frame, 'UIPanelButtonTemplate')
+		btn:SetSize(120, 22)
+		btn:SetPoint('TOPLEFT', anchor, 'BOTTOMLEFT', 0, gapY)
+		btn.slot = slot
 
-	btn:SetScript('OnClick', function(self)
-		self:SetText('请按下按键...')
-		self:EnableKeyboard(true)
-	end)
-	btn:SetScript('OnKeyDown', function(self, key)
-		if key == 'ESCAPE' then
-			self:SetText(ns.GetKey(action))
+		btn:SetScript('OnClick', function(self)
+			self:SetText('请按下按键...')
+			self:EnableKeyboard(true)
+		end)
+		btn:SetScript('OnKeyDown', function(self, key)
+			if key == 'ESCAPE' then
+				frame.Refresh()
+				self:EnableKeyboard(false)
+				return
+			end
+			-- 过滤单独按下的修饰键
+			if key == 'LSHIFT' or key == 'RSHIFT' or key == 'LCTRL' or key == 'RCTRL'
+				or key == 'LALT' or key == 'RALT' then
+				return
+			end
+			-- 支持组合键（如 SHIFT-ENTER）
+			local finalKey = key
+			if IsShiftKeyDown() then finalKey = 'SHIFT-' .. finalKey end
+			if IsControlKeyDown() then finalKey = 'CTRL-' .. finalKey end
+			if IsAltKeyDown() then finalKey = 'ALT-' .. finalKey end
+
+			MyNavigateDB = MyNavigateDB or {}
+			local field = (self.slot == 2) and 'keys2' or 'keys'
+			MyNavigateDB[field] = MyNavigateDB[field] or {}
+			MyNavigateDB[field][action] = finalKey
+			frame.Refresh()
 			self:EnableKeyboard(false)
-			return
-		end
-		-- 过滤单独按下的修饰键
-		if key == 'LSHIFT' or key == 'RSHIFT' or key == 'LCTRL' or key == 'RCTRL'
-			or key == 'LALT' or key == 'RALT' then
-			return
-		end
-		-- 支持组合键（如 SHIFT-ENTER）
-		local finalKey = key
-		if IsShiftKeyDown() then finalKey = 'SHIFT-' .. finalKey end
-		if IsControlKeyDown() then finalKey = 'CTRL-' .. finalKey end
-		if IsAltKeyDown() then finalKey = 'ALT-' .. finalKey end
+			if ns.RefreshBindings then ns.RefreshBindings() end
+		end)
+		-- 右键清空该槽位（主键回到默认值，副键回到未设置）
+		btn:SetScript('OnMouseUp', function(self, button)
+			if button ~= 'RightButton' then return end
+			local field = (self.slot == 2) and 'keys2' or 'keys'
+			if MyNavigateDB and MyNavigateDB[field] then
+				MyNavigateDB[field][action] = nil
+			end
+			frame.Refresh()
+			if ns.RefreshBindings then ns.RefreshBindings() end
+		end)
+		return btn
+	end
 
-		MyNavigateDB = MyNavigateDB or {}
-		MyNavigateDB.keys = MyNavigateDB.keys or {}
-		MyNavigateDB.keys[action] = finalKey
-		self:SetText(finalKey)
-		self:EnableKeyboard(false)
-		if ns.RefreshBindings then ns.RefreshBindings() end
-	end)
+	local btn = MakeSlot(1, label, -3)
+	local btn2 = MakeSlot(2, btn, -2)
 
-	frame.btn = btn
+	function frame.Refresh()
+		btn:SetText(ns.GetKey(action, 1) or '（默认）')
+		btn2:SetText(ns.GetKey(action, 2) or '（未设置）')
+	end
+	frame:Refresh()
+
 	frame.action = action
 	keyButtons[#keyButtons + 1] = frame
 	return frame
@@ -600,7 +623,7 @@ panel:SetScript('OnShow', function()
 		styleSliders[i]:SetValue(ns.GetBorderStyle(styleSliders[i].styleKey))
 	end
 	for i = 1, #keyButtons do
-		keyButtons[i].btn:SetText(ns.GetKey(keyButtons[i].action))
+		keyButtons[i]:Refresh()
 	end
 	wlSection.update()
 	blSection.update()

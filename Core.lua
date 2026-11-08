@@ -603,14 +603,35 @@ local DEFAULT_KEYS = {
 	X = '1', B = '2', Y = '3', A = '4',
 	SCROLLUP = 'PAGEUP', SCROLLDOWN = 'PAGEDOWN',
 }
+-- 每个动作可绑定两组按键：主键存 keys，副键存 keys2。
+-- 方向键的副键默认给键盘方向键，这样数字键盘和方向键都能导航。
+local DEFAULT_KEYS2 = {
+	UP = 'UP', DOWN = 'DOWN', LEFT = 'LEFT', RIGHT = 'RIGHT',
+}
 ns.DEFAULT_KEYS = DEFAULT_KEYS
+ns.DEFAULT_KEYS2 = DEFAULT_KEYS2
 ns.KEY_ACTIONS = { 'UP', 'DOWN', 'LEFT', 'RIGHT', 'A', 'B', 'X', 'Y', 'SCROLLUP', 'SCROLLDOWN' }
 
--- 读取某个动作当前绑定的物理键（未设置过则用默认值）
-function ns.GetKey(action)
-	local keys = MyNavigateDB and MyNavigateDB.keys
+-- 读取某个动作在指定槽位的物理键（slot=1 主键，slot=2 副键；未设置则用默认值）
+function ns.GetKey(action, slot)
+	local field = (slot == 2) and 'keys2' or 'keys'
+	local defaults = (slot == 2) and DEFAULT_KEYS2 or DEFAULT_KEYS
+	local keys = MyNavigateDB and MyNavigateDB[field]
 	local k = keys and keys[action]
-	return (k and k ~= '') and k or DEFAULT_KEYS[action]
+	return (k and k ~= '') and k or defaults[action]
+end
+
+-- 汇总某个动作当前要绑定的所有按键（去重，跳过空槽）
+function ns.GetKeys(action)
+	local list, seen = {}, {}
+	for slot = 1, 2 do
+		local key = ns.GetKey(action, slot)
+		if key and key ~= '' and not seen[key] then
+			seen[key] = true
+			list[#list + 1] = key
+		end
+	end
+	return list
 end
 
 local bindOwner = CreateFrame('Frame')   -- 覆盖绑定的归属帧（无需键盘）
@@ -645,9 +666,8 @@ local actionNode
 --   * 无名节点 / Y 的特殊分支 → 退回 MYNAV_* 命令，由 Cursor:Action 用 Lua 处理。
 local function ApplyActionKeys(node)
 	for _, action in ipairs({ 'A', 'B', 'X', 'Y' }) do
-		local key = ns.GetKey(action)
-		if key then
-			local btnName, mouse = SafeClick(node, action)
+		local btnName, mouse = SafeClick(node, action)
+		for _, key in ipairs(ns.GetKeys(action)) do
 			if btnName then
 				SetOverrideBindingClick(bindOwner, true, key, btnName, mouse)
 			else
@@ -668,8 +688,9 @@ local function ApplyOverride(on)
 	if on then
 		-- 方向键 / 滚动键：普通命令绑定，走 Cursor 的移动与滚动逻辑
 		for _, action in ipairs({ 'UP', 'DOWN', 'LEFT', 'RIGHT', 'SCROLLUP', 'SCROLLDOWN' }) do
-			local key = ns.GetKey(action)
-			if key then SetOverrideBinding(bindOwner, true, key, 'MYNAV_' .. action) end
+			for _, key in ipairs(ns.GetKeys(action)) do
+				SetOverrideBinding(bindOwner, true, key, 'MYNAV_' .. action)
+			end
 		end
 		-- 动作键：安全点击绑定，随当前节点变化
 		ApplyActionKeys(ns.Cursor and ns.Cursor:GetCurrentNode() or nil)
