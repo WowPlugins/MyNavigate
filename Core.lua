@@ -593,7 +593,8 @@ end
 --       PLAYER_REGEN_ENABLED 补应用。因此两种情形受客户端限制、无法即时切换：
 --         * 战斗中打开的窗口，本轮战斗内进入不了导航，战斗结束后才补上；
 --         * 战斗中关闭的窗口，本轮战斗内按键仍停在导航态，战斗结束后才还原。
---       只要窗口是在非战斗时打开/关闭（最常见情形），战斗内外都能正确工作。
+--       另外动作键绑在一个安全代理按钮上：战斗中该按钮自动改成「执行原动作条槽位」，
+--       所以窗口没关就进战斗时，ABXY 仍然能放技能；方向键在战斗中仍可导航。
 ---------------------------------------------------------------------
 -- 物理键 → 绑定名：默认方向 5/6/7/8，动作 X/B/Y/A 分别对应 1/2/3/4。
 -- 滚动键不属于手柄那 8 个物理键，默认用键盘 PageUp / PageDown。
@@ -659,9 +660,81 @@ end
 -- 当前期望绑定的动作节点（由 Cursor 切换节点时通过 ns.SetActionNode 更新）
 local actionNode
 
+-- 动作键的安全代理按钮：覆盖绑定在战斗中无法解除（ClearOverrideBindings 自 2.0
+-- 起就是受保护函数），所以动作键不直接绑节点，而是绑到一个安全按钮上，
+-- 由它按战斗状态切换行为：
+--   战斗外 → 安全点击当前导航节点（与原行为一致）；
+--   战斗内 → 执行该键原本的动作条槽位（数字键 = UseAction(槽位)），
+--            这样窗口没关就进战斗时，ABXY 仍然能放技能。
+-- 切换只能做在「点击前」的受限片段里（SecureHandlerWrapScript 包住 OnClick），
+-- 并且只改自身的 clickbutton 属性：战斗中跨帧改别的按钮属性不生效，
+-- 改自身属性则是本机可行写法（跨帧改别的按钮在战斗内不生效）。
+-- 注意：不能把动作条按钮名当字符串塞进 clickbutton —— 受限环境解析不了名字，
+-- 会变成 ("ActionButton1"):Click() 报错；所以战斗分支改用 type='action' + action=槽位。
+local proxies = {}
+local proxyCount = 0
+
+local BEFORE_CLICK = [[
+	local slot = self:GetAttribute('navslot')
+	if slot and self:GetAttribute('state-combat') == '1' then
+		-- 战斗中：这次点击当作按下原来的动作条槽位（type='action' 不需要按钮名）
+		self:SetAttribute('type', 'action')
+		self:SetAttribute('action', slot)
+	else
+		-- 战斗外：回到点击导航节点，clickbutton 仍是外面设好的那个引用
+		self:SetAttribute('type', 'click')
+	end
+]]
+
+local function GetProxy(key)
+	local proxy = proxies[key]
+	if proxy then return proxy end
+
+	-- 名字必须各不相同：覆盖绑定按名字找按钮，重名会让所有键都点到同一个代理
+	proxyCount = proxyCount + 1
+	local name = 'MyNavigateKey' .. proxyCount
+	proxy = CreateFrame('Button', name, UIParent, 'SecureActionButtonTemplate')
+	-- 必须显示才能被覆盖绑定点击，用 1x1 + 全透明放在角落，不挡鼠标
+	proxy:SetSize(1, 1)
+	proxy:SetPoint('BOTTOMRIGHT', UIParent, 'BOTTOMRIGHT', -8, 8)
+	proxy:SetAlpha(0)
+	proxy:EnableMouse(false)
+	proxy:RegisterForClicks('AnyUp')
+	proxy:SetAttribute('type', 'click')
+	-- 数字键记下对应的动作条槽位（SPACE / ENTER 之类没有槽位，战斗中仍走导航）
+	proxy:SetAttribute('navslot', tonumber(key))
+	-- 战斗状态由状态驱动写到 state-combat 上，供点击前的片段读取。
+	-- 客户端不支持时降级为纯导航（拿不到 state-combat 就不会回落动作条）。
+	if pcall(RegisterStateDriver, proxy, 'combat', '[combat] 1; 0') then
+		-- 每次点击前先按状态选目标：战斗中 → 动作条按钮，否则 → 当前导航节点
+		pcall(SecureHandlerWrapScript, proxy, 'OnClick', proxy, BEFORE_CLICK)
+	end
+
+	proxies[key] = proxy
+	return proxy
+end
+
+-- 方向键的点击目标：战斗外代理「点击」它来跑导航逻辑；
+-- 战斗中代理改走动作条槽位，所以绑成数字键的 5~8 也能放技能。
+local dirButtons = {}
+
+local function GetDirectionButton(action)
+	local btn = dirButtons[action]
+	if btn then return btn end
+	btn = CreateFrame('Button', 'MyNavigateDir' .. action, UIParent)
+	btn:SetSize(1, 1)
+	btn:SetPoint('BOTTOMRIGHT', UIParent, 'BOTTOMRIGHT', -8, 18)
+	btn:SetAlpha(0)
+	btn:EnableMouse(false)
+	btn:RegisterForClicks('AnyUp')
+	btn:SetScript('OnClick', function() MyNavigate:OnDirection(action) end)
+	dirButtons[action] = btn
+	return btn
+end
+
 -- 重设 4 个动作键的覆盖绑定：
---   * 节点有名字 → SetOverrideBindingClick：点击交给暴雪安全框架执行。
---     背包里「使用 / 拾取」这类受保护操作（UseContainerItem 等）只有走这条路
+--   * 节点有名字 → 绑到安全代理按钮，由它点节点（战斗中自动改成动作条槽位）。
+--     背包里「使用 / 拾取」这类受保护操作（UseContainerItem 等）只有走安全点击
 --     才不会被 ADDON_ACTION_BLOCKED（"暴雪自己的代码才能使用的接口"）拦下；
 --   * 无名节点 / Y 的特殊分支 → 退回 MYNAV_* 命令，由 Cursor:Action 用 Lua 处理。
 local function ApplyActionKeys(node)
@@ -669,7 +742,16 @@ local function ApplyActionKeys(node)
 		local btnName, mouse = SafeClick(node, action)
 		for _, key in ipairs(ns.GetKeys(action)) do
 			if btnName then
-				SetOverrideBindingClick(bindOwner, true, key, btnName, mouse)
+				local proxy = GetProxy(key)
+				proxy:SetAttribute('navbutton', btnName)
+				-- 战斗外先把目标设成「点击节点」，点击前的片段会再按状态校正一次
+				-- clickbutton 必须给帧对象：受限环境解析不了名字字符串，
+				-- 传名字会变成 ("GameMenuButtonOptions"):Click() 报错
+				proxy:SetAttribute('clickbutton', node)
+				SetOverrideBindingClick(bindOwner, true, key, proxy:GetName(), mouse)
+				if MyNavigateDB and MyNavigateDB.debug then
+					ns.Debug('代理', key, '→', btnName, '槽位', tostring(tonumber(key) or '无'))
+				end
 			else
 				SetOverrideBinding(bindOwner, true, key, 'MYNAV_' .. action)
 			end
@@ -683,13 +765,48 @@ function ns.SetActionNode(node)
 	if applied and not InCombatLockdown() then ApplyActionKeys(node) end
 end
 
+-- 诊断：打印动作键代理在战斗内外的实际状态（/mynav diag）
+function ns.DumpProxies()
+	print('|cff739BD0MyNavigate|r 战斗锁=' .. tostring(InCombatLockdown()))
+	local slots = {}
+	for key, proxy in pairs(proxies) do
+		slots[#slots + 1] = key
+	end
+	table.sort(slots)
+	for i = 1, #slots do
+		local key = slots[i]
+		local proxy = proxies[key]
+		local clickTarget = proxy:GetAttribute('clickbutton')
+		if type(clickTarget) == 'table' then
+			clickTarget = clickTarget.GetName and clickTarget:GetName() or '帧'
+		end
+		print(('  键 %s 状态=%s type=%s action=%s clickbutton=%s 槽位=%s 导航=%s 原始绑定=%s'):format(
+			tostring(key),
+			tostring(proxy:GetAttribute('state-combat')),
+			tostring(proxy:GetAttribute('type')),
+			tostring(proxy:GetAttribute('action')),
+			tostring(clickTarget),
+			tostring(proxy:GetAttribute('navslot')),
+			tostring(proxy:GetAttribute('navbutton')),
+			tostring(GetBindingAction(key))))
+	end
+end
+
 local function ApplyOverride(on)
 	ClearOverrideBindings(bindOwner)
 	if on then
-		-- 方向键 / 滚动键：普通命令绑定，走 Cursor 的移动与滚动逻辑
+		-- 方向键：数字键走安全代理（战斗中回落动作条槽位 5~8），
+		-- 其它键（方向键、滚轮）仍用普通命令绑定，战斗中无法回落、继续导航
 		for _, action in ipairs({ 'UP', 'DOWN', 'LEFT', 'RIGHT', 'SCROLLUP', 'SCROLLDOWN' }) do
+			local isDirection = DIRECTION_KEYS[action] ~= nil
 			for _, key in ipairs(ns.GetKeys(action)) do
-				SetOverrideBinding(bindOwner, true, key, 'MYNAV_' .. action)
+				if isDirection and tonumber(key) then
+					local proxy = GetProxy(key)
+					proxy:SetAttribute('clickbutton', GetDirectionButton(action))
+					SetOverrideBindingClick(bindOwner, true, key, proxy:GetName(), 'LeftButton')
+				else
+					SetOverrideBinding(bindOwner, true, key, 'MYNAV_' .. action)
+				end
 			end
 		end
 		-- 动作键：安全点击绑定，随当前节点变化
@@ -810,6 +927,8 @@ SlashCmdList['MYNAV'] = function(msg)
 		else
 			print('|cff739BD0MyNavigate|r: 没有可恢复的原始按键记录')
 		end
+	elseif cmd == 'diag' then
+		ns.DumpProxies()
 	elseif cmd == 'debug' then
 		MyNavigateDB.debug = not MyNavigateDB.debug
 		print('|cff739BD0MyNavigate|r: 调试模式'..(MyNavigateDB.debug and '开启' or '关闭'))
@@ -923,6 +1042,6 @@ SlashCmdList['MYNAV'] = function(msg)
 			print('|cff739BD0MyNavigate|r: 设置面板未加载')
 		end
 	else
-		print('|cff739BD0MyNavigate|r: /mynav on|off|config|debug|dump [关键词]|pick|unpick|skip [帧名]|unskip <帧名>|add <帧名>|remove <帧名>|block <帧名>|unblock <帧名>|nodes|tree <帧名>|reset')
+		print('|cff739BD0MyNavigate|r: /mynav on|off|config|debug|dump [关键词]|pick|unpick|skip [帧名]|unskip <帧名>|add <帧名>|remove <帧名>|block <帧名>|unblock <帧名>|nodes|diag|tree <帧名>|reset')
 	end
 end
