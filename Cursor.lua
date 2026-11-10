@@ -622,7 +622,9 @@ end
 --窗口同开时，单次扫描量从「全部窗口」降到「变化的那一个」。
 -- 有窗口关闭时退回全量扫：被关掉的窗口之前在 ScrubCache 里把别的窗口的
 --节点当遮挡删掉了，只重扫新窗口捞不回来。
-function Cursor:Refresh(selectRoot, changedRoots)
+-- skipMove（可选）：true 时照常重扫并重算导航模式 / 覆盖绑定，但不自动搬落点
+--（玩家在缓冲期内已经自己导航过，避免连跳；关窗后的清绑不能因此被跳过）
+function Cursor:Refresh(selectRoot, changedRoots, skipMove)
 	local roots = ns.GetRootFrames()
 	local partial = false
 	if changedRoots then
@@ -691,9 +693,15 @@ function Cursor:Refresh(selectRoot, changedRoots)
 	ns.navActive = enabled and (#Node.cache > 0)
 	if ns.SetGamepadOverride then ns.SetGamepadOverride(ns.navActive) end
 	if enabled then
-		-- 新窗口打开时直接落到它里面（SelectRoot 内部会 MoveTo）；
-		-- 它里面一个可导航节点都没有时，再退回常规落点
-		if not (selectRoot and self:SelectRoot(selectRoot)) then
+		if skipMove then
+			-- 玩家正在自己导航：不改落点；只在当前节点已失效（窗口关了）时收起金框
+			if not (current and Node:IsRelevant(current.node)
+				and Node:IsDrawn(current.node, current.super)) then
+				self:HideNode()
+			end
+		elseif not (selectRoot and self:SelectRoot(selectRoot)) then
+			-- 新窗口打开时直接落到它里面（SelectRoot 内部会 MoveTo）；
+			-- 它里面一个可导航节点都没有时，再退回常规落点
 			self:MoveTo(nextItem)
 		end
 	else

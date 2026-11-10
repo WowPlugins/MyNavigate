@@ -480,12 +480,17 @@ local function DoFlush()
 	local root, changed = flushRoot, changedRoots
 	flushRoot, changedRoots = nil, {}
 	if not CanTrack() then return end
-	-- 缓冲期内玩家已经自己按方向键搬过光标：放弃这次自动落点，避免连跳
-	if ns.Cursor.GetLastMoveTime and ns.Cursor:GetLastMoveTime() > flushSince then return end
+	-- 缓冲期内玩家已经自己按方向键搬过光标：本轮不做自动落点（避免连跳），
+	-- 但刷新必须照常跑 —— 否则最后一个窗口关掉后，覆盖绑定会卡在生效状态，
+	-- 数字键再也回不到动作条（保存弹窗关掉后按键"失灵"就是这个卡死）。
+	local skipMove = false
+	if ns.Cursor.GetLastMoveTime and ns.Cursor:GetLastMoveTime() > flushSince then
+		skipMove, root = true, nil
+	end
 	-- 窗口刚打开又被关掉 / 被拉黑 / 玩家已经自己进去了：不再搬运，只做普通刷新
 	if root and not (root:IsVisible() and ns.IsNavigableRoot(root)) then root = nil end
 	if root and ns.Cursor.IsCurrentInRoot and ns.Cursor:IsCurrentInRoot(root) then root = nil end
-	ns.Cursor:Refresh(root, changed)
+	ns.Cursor:Refresh(root, changed, skipMove)
 	-- 窗口的控件可能晚于 50ms 才建好（按需填充的列表 / 异步加载的面板）：
 	-- 这一拍没落进刚打开的窗口就隔 50ms 再试，最多补几次，避免"窗口开了却没有金框"。
 	if root and flushRetry < MAX_FLUSH_RETRIES then
@@ -796,6 +801,9 @@ function ns.DumpProxies()
 end
 
 local function ApplyOverride(on)
+	if MyNavigateDB and MyNavigateDB.debug then
+		ns.Debug('覆盖绑定切换 →', on and 'ON' or 'OFF')
+	end
 	ClearOverrideBindings(bindOwner)
 	if on then
 		-- 方向键：数字键走安全代理（战斗中回落动作条槽位 5~8），
@@ -817,6 +825,25 @@ local function ApplyOverride(on)
 	end
 	applied = on
 end
+
+-- 兜底看门狗：覆盖绑定还生效、但屏幕上已经没有任何白名单窗口时强制清绑。
+-- 任何事件路径漏掉关窗清绑（钩子没挂上、关窗事件没触发），最多 0.5s 内自愈，
+-- 数字键回到动作条。战斗锁期间跳过，出战斗后由 PLAYER_REGEN_ENABLED 兜底。
+local overrideWatchdog = CreateFrame('Frame')
+local owTimer = 0
+overrideWatchdog:SetScript('OnUpdate', function(_, elapsed)
+	owTimer = owTimer + elapsed
+	if owTimer < 0.5 then return end
+	owTimer = 0
+	if not applied or InCombatLockdown() then return end
+	if #ns.GetRootFrames() > 0 then return end
+	desired = false
+	ApplyOverride(false)
+	ns.navActive = false
+	if ns.Cursor and ns.Cursor.GetCurrentNode and ns.Cursor:GetCurrentNode() then
+		ns.Cursor:HideNode()
+	end
+end)
 
 -- 改键后立即按新键重应用覆盖绑定（战斗中不能改，出战斗后由事件兜底）
 function ns.RefreshBindings()
